@@ -1,24 +1,15 @@
-import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
+import { Tabs } from 'expo-router';
 
-import { useAppTheme } from '../features/theme/theme-context';
-import { HomeScreen } from '../screens/home-screen';
-import { SettingsScreen } from '../screens/settings-screen';
-import { themeTokens } from '../theme/theme-tokens';
+import { useAppTheme } from '../../src/features/theme/theme-context';
+import { themeTokens } from '../../src/theme/theme-tokens';
 
-type RootTabParamList = {
-  Home: undefined;
-  Settings: undefined;
-};
-
-const Tab = createBottomTabNavigator<RootTabParamList>();
-
-export function AppTabs() {
+export default function TabsLayout() {
   const { themeMode } = useAppTheme();
   const tokens = themeTokens[themeMode];
 
   return (
-    <Tab.Navigator
-      screenOptions={({ route }) => ({
+    <Tabs
+      screenOptions={{
         headerShown: false,
         sceneStyle: {
           backgroundColor: tokens.sceneBackground,
@@ -40,10 +31,10 @@ export function AppTabs() {
           paddingBottom: 10,
           paddingTop: 10,
         },
-      })}
+      }}
     >
-      <Tab.Screen component={HomeScreen} name="Home" />
-      <Tab.Screen component={SettingsScreen} name="Settings" />
-    </Tab.Navigator>
+      <Tabs.Screen name="index" options={{ title: 'Home' }} />
+      <Tabs.Screen name="settings" options={{ title: 'Settings' }} />
+    </Tabs>
   );
 }

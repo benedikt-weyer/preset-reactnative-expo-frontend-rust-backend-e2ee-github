@@ -2,6 +2,7 @@
   "expo": {
     "name": "preset-mobile",
     "slug": "preset-mobile",
+    "scheme": "presetmobile",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
@@ -22,7 +23,11 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "experiments": {
+      "typedRoutes": true
+    },
     "plugins": [
+      "expo-router",
       "expo-secure-store"
     ]
   }

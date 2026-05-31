@@ -1,14 +1,14 @@
-import { NavigationContainer } from '@react-navigation/native';
+import { ThemeProvider as NavigationThemeProvider } from '@react-navigation/native';
+import { Slot } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
-import { ThemeProvider, useAppTheme } from './src/features/theme/theme-context';
-import { AppTabs } from './src/navigation/app-tabs';
-import { navigationThemes, themeTokens } from './src/theme/theme-tokens';
+import { ThemeProvider, useAppTheme } from '../src/features/theme/theme-context';
+import { navigationThemes, themeTokens } from '../src/theme/theme-tokens';
 
-function AppShell() {
+function RootNavigator() {
   const { isHydrated, themeMode } = useAppTheme();
   const tokens = themeTokens[themeMode];
 
@@ -26,21 +26,19 @@ function AppShell() {
   }
 
   return (
-    <>
+    <NavigationThemeProvider value={navigationThemes[themeMode]}>
       <StatusBar style={themeMode === 'dark' ? 'light' : 'dark'} />
-      <NavigationContainer theme={navigationThemes[themeMode]}>
-        <AppTabs />
-      </NavigationContainer>
-    </>
+      <Slot />
+    </NavigationThemeProvider>
   );
 }
 
-export default function App() {
+export default function RootLayout() {
   return (
     <GestureHandlerRootView className="flex-1">
       <SafeAreaProvider>
         <ThemeProvider>
-          <AppShell />
+          <RootNavigator />
         </ThemeProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
