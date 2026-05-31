@@ -49,7 +49,8 @@
             # React Native development
             nodejs_24
             pnpm
-            eas-cli 
+            eas-cli
+            gtk3
             
             # Rust development
             rustc
