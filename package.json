@@ -1,0 +1,13 @@
+{
+  "name": "preset-reactnative-frontend-rust-backend-e2ee-github",
+  "private": true,
+  "packageManager": "pnpm@10.33.4",
+  "scripts": {
+    "dev": "turbo dev",
+    "dev:mobile": "turbo -F mobile dev",
+    "typecheck": "turbo typecheck"
+  },
+  "devDependencies": {
+    "turbo": "^2.5.4"
+  }
+}
