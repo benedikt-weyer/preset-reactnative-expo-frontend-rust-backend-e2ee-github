@@ -78,6 +78,11 @@
             export ANDROID_NDK_ROOT="$ANDROID_HOME/ndk-bundle";
             export GRADLE_OPTS="-Dorg.gradle.project.android.aapt2FromMavenOverride=${ANDROID_HOME}/build-tools/${buildToolsVersion}/aapt2"
 
+            export PKG_CONFIG_PATH="${pkgs.gtk3}/lib/pkgconfig:${pkgs.glib}/lib/pkgconfig:${pkgs.sysprof}/lib/pkgconfig:${pkgs.libsecret}/lib/pkgconfig:${pkgs.libsoup_3}/lib/pkgconfig:${pkgs.gst_all_1.gstreamer}/lib/pkgconfig:${pkgs.gst_all_1.gst-plugins-base}/lib/pkgconfig:${pkgs.pulseaudio}/lib/pkgconfig:${pkgs.alsa-lib}/lib/pkgconfig:$PKG_CONFIG_PATH"
+            export LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath [
+              pkgs.gtk3
+            ]}:$LD_LIBRARY_PATH"
+
             
             # Set up Java
             export JAVA_HOME="${pkgs.jdk17}"
