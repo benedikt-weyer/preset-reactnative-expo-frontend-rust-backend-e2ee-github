@@ -1,0 +1,36 @@
+site_name: Preset React Native Frontend Rust Backend E2EE GitHub
+site_description: Monorepo overview for the Expo frontend and future backend
+site_url: https://benedikt-weyer.github.io/preset-reactnative-frontend-rust-backend-e2ee-github/
+repo_url: https://github.com/benedikt-weyer/preset-reactnative-frontend-rust-backend-e2ee-github
+theme:
+  name: material
+  language: en
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: teal
+      accent: emerald
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: teal
+      accent: lime
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+nav:
+  - Overview: index.md
+  - Workspace: workspace.md
+  - Commands: commands.md
+markdown_extensions:
+  - admonition
+  - attr_list
+  - tables
+  - toc:
+      permalink: true

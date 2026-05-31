@@ -3,7 +3,10 @@
   "private": true,
   "packageManager": "pnpm@10.33.4",
   "scripts": {
+    "build": "turbo build",
+    "build:docs": "turbo -F docs build",
     "dev": "turbo dev",
+    "dev:docs": "turbo -F docs dev",
     "dev:mobile": "turbo -F mobile dev",
     "typecheck": "turbo typecheck"
   },

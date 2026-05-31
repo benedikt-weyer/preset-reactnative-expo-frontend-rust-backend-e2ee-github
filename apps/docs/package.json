@@ -1,0 +1,9 @@
+{
+  "name": "docs",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "../../.venv/bin/python -m mkdocs build --config-file mkdocs.yml --strict",
+    "dev": "../../.venv/bin/python -m mkdocs serve --config-file mkdocs.yml --dev-addr 127.0.0.1:8000"
+  }
+}

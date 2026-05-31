@@ -8,3 +8,5 @@ apps/mobile/.expo
 apps/mobile/.expo-shared
 apps/mobile/node_modules
 apps/mobile/web-build
+apps/docs/site
+apps/docs/.cache
