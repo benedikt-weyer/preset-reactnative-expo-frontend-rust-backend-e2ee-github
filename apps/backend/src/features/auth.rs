@@ -129,12 +129,12 @@ async fn login(
 }
 
 fn issue_token(state: &AppState, user: &user::Model, token_type: TokenType) -> AppResult<String> {
-    let ttl_hours = match token_type {
-        TokenType::Access => state.config.jwt_ttl_hours,
-        TokenType::Refresh => state.config.jwt_refresh_ttl_hours,
+    let ttl_minutes = match token_type {
+        TokenType::Access => state.config.jwt_ttl_minutes,
+        TokenType::Refresh => state.config.jwt_refresh_ttl_minutes,
     };
     let expires_at = Utc::now()
-        .checked_add_signed(chrono::Duration::hours(ttl_hours))
+        .checked_add_signed(chrono::Duration::minutes(ttl_minutes))
         .ok_or_else(|| AppError::internal("failed to calculate the session expiry"))?;
     let claims = Claims {
         sub: user.id.to_string(),

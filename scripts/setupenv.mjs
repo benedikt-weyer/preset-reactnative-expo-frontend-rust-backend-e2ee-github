@@ -8,6 +8,11 @@ const PLACEHOLDER_SECRETS = new Map([
   ['JWT_SECRET', 'change-me-for-non-local-use'],
 ]);
 
+const LEGACY_ENV_KEYS = new Map([
+  ['JWT_TTL_MINUTES', 'JWT_TTL_HOURS'],
+  ['JWT_REFRESH_TTL_MINUTES', 'JWT_REFRESH_TTL_HOURS'],
+]);
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const repoRoot = path.resolve(__dirname, '..');
@@ -123,6 +128,16 @@ function resolveEnvValue(key, currentValue, fallbackValue) {
   return value;
 }
 
+function getExistingEnvValue(existingValues, key) {
+  const currentValue = existingValues.get(key);
+  if (currentValue !== undefined) {
+    return currentValue;
+  }
+
+  const legacyKey = LEGACY_ENV_KEYS.get(key);
+  return legacyKey ? existingValues.get(legacyKey) : undefined;
+}
+
 function syncEnvContent(exampleContent, existingContent) {
   const templateLines = parseEnvTemplate(exampleContent);
   const existingValues = parseEnv(existingContent);
@@ -135,7 +150,7 @@ function syncEnvContent(exampleContent, existingContent) {
 
       const value = resolveEnvValue(
         line.key,
-        existingValues.get(line.key),
+        getExistingEnvValue(existingValues, line.key),
         line.value,
       );
 

@@ -7,8 +7,8 @@ pub struct Config {
     pub bind_addr: SocketAddr,
     pub database_url: String,
     pub jwt_secret: String,
-    pub jwt_ttl_hours: i64,
-    pub jwt_refresh_ttl_hours: i64,
+    pub jwt_ttl_minutes: i64,
+    pub jwt_refresh_ttl_minutes: i64,
 }
 
 impl Config {
@@ -28,21 +28,36 @@ impl Config {
 
         let jwt_secret = env::var("JWT_SECRET")
             .unwrap_or_else(|_| "dev-only-secret-change-me".to_owned());
-        let jwt_ttl_hours = env::var("JWT_TTL_HOURS")
-            .ok()
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(24);
-        let jwt_refresh_ttl_hours = env::var("JWT_REFRESH_TTL_HOURS")
-            .ok()
-            .and_then(|value| value.parse::<i64>().ok())
-            .unwrap_or(24 * 30);
+        let jwt_ttl_minutes = read_i64_env_with_legacy(
+            "JWT_TTL_MINUTES",
+            "JWT_TTL_HOURS",
+            24 * 60,
+        );
+        let jwt_refresh_ttl_minutes = read_i64_env_with_legacy(
+            "JWT_REFRESH_TTL_MINUTES",
+            "JWT_REFRESH_TTL_HOURS",
+            24 * 60 * 30,
+        );
 
         Ok(Self {
             bind_addr,
             database_url,
             jwt_secret,
-            jwt_ttl_hours,
-            jwt_refresh_ttl_hours,
+            jwt_ttl_minutes,
+            jwt_refresh_ttl_minutes,
         })
     }
+}
+
+fn read_i64_env_with_legacy(primary_key: &str, legacy_key: &str, default_value: i64) -> i64 {
+    env::var(primary_key)
+        .ok()
+        .and_then(|value| value.parse::<i64>().ok())
+        .or_else(|| {
+            env::var(legacy_key)
+                .ok()
+                .and_then(|value| value.parse::<i64>().ok())
+                .map(|value| value * 60)
+        })
+        .unwrap_or(default_value)
 }
