@@ -50,5 +50,5 @@ pnpm typecheck
 
 - Username is the plain email address.
 - The mobile app generates a random password salt locally during registration, stores it on the backend, and fetches that salt during login before deriving the crypt key with libsodium Argon2id.
-- The mobile app derives an auth key from that crypt key and only sends the auth key to the backend.
+- The mobile app derives auth and encryption subkeys from that crypt key with HKDF-SHA512 and only sends the auth key to the backend.
 - Local note content is encrypted and decrypted on-device with the crypt key.

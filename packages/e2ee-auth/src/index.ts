@@ -1,5 +1,6 @@
+import { hkdf } from '@noble/hashes/hkdf';
 import { sha512 } from '@noble/hashes/sha2';
-import { bytesToHex, concatBytes, hexToBytes, randomBytes } from '@noble/hashes/utils';
+import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils';
 import {
   crypto_pwhash,
   crypto_pwhash_ALG_ARGON2ID13,
@@ -14,6 +15,7 @@ import nacl from 'tweetnacl';
 
 const AUTH_CONTEXT_PREFIX = utf8('auth:');
 const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
+const AUTH_KEY_LENGTH = 64;
 const CRYPT_KEY_LENGTH = 64;
 
 loadSumoVersion();
@@ -71,7 +73,7 @@ export async function deriveCredentials(
   );
 
   return {
-    authKey: bytesToHex(sha512(concatBytes(AUTH_CONTEXT_PREFIX, cryptKey))),
+    authKey: bytesToHex(deriveSubkey(cryptKey, AUTH_CONTEXT_PREFIX, AUTH_KEY_LENGTH)),
     cryptKey,
     email: normalizedEmail,
   };
@@ -104,10 +106,15 @@ export function decryptString(payload: EncryptedPayload, cryptKey: CryptKey) {
 }
 
 function deriveEncryptionKey(cryptKey: CryptKey) {
-  return sha512(concatBytes(ENCRYPTION_CONTEXT_PREFIX, cryptKey)).slice(
-    0,
+  return deriveSubkey(
+    cryptKey,
+    ENCRYPTION_CONTEXT_PREFIX,
     nacl.secretbox.keyLength,
   );
+}
+
+function deriveSubkey(cryptKey: CryptKey, info: Uint8Array, keyLength: number) {
+  return hkdf(sha512, cryptKey, undefined, info, keyLength);
 }
 
 function normalizePasswordSalt(saltHex: string) {
