@@ -10,3 +10,4 @@ apps/mobile/node_modules
 apps/mobile/web-build
 apps/docs/site
 apps/docs/.cache
+apps/backend/target

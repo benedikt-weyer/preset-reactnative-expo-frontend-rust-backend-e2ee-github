@@ -1,0 +1,92 @@
+import { pbkdf2 } from '@noble/hashes/pbkdf2';
+import { sha512 } from '@noble/hashes/sha2';
+import { bytesToHex, concatBytes, hexToBytes, randomBytes } from '@noble/hashes/utils';
+import nacl from 'tweetnacl';
+
+const AUTH_CONTEXT_PREFIX = utf8('auth:');
+const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
+const SALT_CONTEXT_PREFIX = utf8('e2ee-auth:');
+const KDF_ITERATIONS = 210_000;
+const CRYPT_KEY_LENGTH = 64;
+
+export type CryptKey = Uint8Array;
+
+export type DerivedCredentials = {
+  authKey: string;
+  cryptKey: CryptKey;
+  email: string;
+};
+
+export type EncryptedPayload = {
+  algorithm: 'xsalsa20-poly1305';
+  ciphertextHex: string;
+  nonceHex: string;
+  version: 1;
+};
+
+export function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export function deriveCredentials(email: string, password: string): DerivedCredentials {
+  const normalizedEmail = normalizeEmail(email);
+  const trimmedPassword = password.trim();
+
+  if (!normalizedEmail.includes('@')) {
+    throw new Error('Enter a valid email address.');
+  }
+
+  if (!trimmedPassword) {
+    throw new Error('Enter a password.');
+  }
+
+  const cryptKey = pbkdf2(
+    sha512,
+    utf8(password),
+    concatBytes(SALT_CONTEXT_PREFIX, utf8(normalizedEmail)),
+    { c: KDF_ITERATIONS, dkLen: CRYPT_KEY_LENGTH },
+  );
+
+  return {
+    authKey: bytesToHex(sha512(concatBytes(AUTH_CONTEXT_PREFIX, cryptKey))),
+    cryptKey,
+    email: normalizedEmail,
+  };
+}
+
+export function encryptString(value: string, cryptKey: CryptKey): EncryptedPayload {
+  const nonce = randomBytes(nacl.secretbox.nonceLength);
+  const ciphertext = nacl.secretbox(utf8(value), nonce, deriveEncryptionKey(cryptKey));
+
+  return {
+    algorithm: 'xsalsa20-poly1305',
+    ciphertextHex: bytesToHex(ciphertext),
+    nonceHex: bytesToHex(nonce),
+    version: 1,
+  };
+}
+
+export function decryptString(payload: EncryptedPayload, cryptKey: CryptKey) {
+  const plaintext = nacl.secretbox.open(
+    hexToBytes(payload.ciphertextHex),
+    hexToBytes(payload.nonceHex),
+    deriveEncryptionKey(cryptKey),
+  );
+
+  if (!plaintext) {
+    throw new Error('Unable to decrypt data with the current password.');
+  }
+
+  return new TextDecoder().decode(plaintext);
+}
+
+function deriveEncryptionKey(cryptKey: CryptKey) {
+  return sha512(concatBytes(ENCRYPTION_CONTEXT_PREFIX, cryptKey)).slice(
+    0,
+    nacl.secretbox.keyLength,
+  );
+}
+
+function utf8(value: string) {
+  return new TextEncoder().encode(value);
+}
