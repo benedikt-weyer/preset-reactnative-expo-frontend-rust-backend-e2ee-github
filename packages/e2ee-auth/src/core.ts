@@ -1,11 +1,8 @@
-import { hkdf } from '@noble/hashes/hkdf';
-import { sha512 } from '@noble/hashes/sha2';
-import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils';
-
 const AUTH_CONTEXT_PREFIX = utf8('auth:');
 const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
 const AUTH_KEY_LENGTH = 64;
 const CRYPT_KEY_LENGTH = 64;
+const SHA512_BLOCK_BYTES = 128;
 
 export type CryptKey = Uint8Array;
 
@@ -23,6 +20,8 @@ export type EncryptedPayload = {
 };
 
 export type E2eeDriver = {
+  hash: (message: Uint8Array) => Uint8Array;
+  hashBytes: number | (() => number);
   derivePasswordHash: (
     password: Uint8Array,
     salt: Uint8Array,
@@ -74,18 +73,18 @@ export function createE2ee(driver: E2eeDriver) {
     );
 
     return {
-      authKey: bytesToHex(deriveSubkey(cryptKey, AUTH_CONTEXT_PREFIX, AUTH_KEY_LENGTH)),
+      authKey: bytesToHex(deriveSubkey(driver, cryptKey, AUTH_CONTEXT_PREFIX, AUTH_KEY_LENGTH)),
       cryptKey,
       email: normalizedEmail,
     };
   }
 
   function encryptString(value: string, cryptKey: CryptKey): EncryptedPayload {
-    const nonce = randomBytes(resolveSecretboxNonceBytes(driver));
+    const nonce = driver.randomBytes(resolveSecretboxNonceBytes(driver));
     const ciphertext = driver.encrypt(
       utf8(value),
       nonce,
-      deriveEncryptionKey(cryptKey, resolveSecretboxKeyBytes(driver)),
+      deriveEncryptionKey(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
     );
 
     return {
@@ -101,7 +100,7 @@ export function createE2ee(driver: E2eeDriver) {
       const plaintext = driver.decrypt(
         hexToBytes(payload.ciphertextHex),
         hexToBytes(payload.nonceHex),
-        deriveEncryptionKey(cryptKey, resolveSecretboxKeyBytes(driver)),
+        deriveEncryptionKey(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
       );
 
       return new TextDecoder().decode(plaintext);
@@ -119,16 +118,75 @@ export function createE2ee(driver: E2eeDriver) {
   };
 }
 
-function deriveEncryptionKey(cryptKey: CryptKey, keyLength: number) {
+function deriveEncryptionKey(driver: E2eeDriver, cryptKey: CryptKey, keyLength: number) {
   return deriveSubkey(
+    driver,
     cryptKey,
     ENCRYPTION_CONTEXT_PREFIX,
     keyLength,
   );
 }
 
-function deriveSubkey(cryptKey: CryptKey, info: Uint8Array, keyLength: number) {
-  return hkdf(sha512, cryptKey, undefined, info, keyLength);
+function deriveSubkey(
+  driver: E2eeDriver,
+  cryptKey: CryptKey,
+  info: Uint8Array,
+  keyLength: number,
+) {
+  const hashBytes = resolveHashBytes(driver);
+
+  if (keyLength > 255 * hashBytes) {
+    throw new Error('Derived key length is too large.');
+  }
+
+  const pseudoRandomKey = hmacSha512(driver, cryptKey, new Uint8Array(hashBytes));
+  const output = new Uint8Array(keyLength);
+  let previousBlock = new Uint8Array(0);
+  let offset = 0;
+
+  for (let counter = 1; offset < keyLength; counter += 1) {
+    const currentBlock = hmacSha512(
+      driver,
+      concatBytes(previousBlock, info, Uint8Array.of(counter)),
+      pseudoRandomKey,
+    );
+    const chunk = currentBlock.subarray(0, Math.min(currentBlock.length, keyLength - offset));
+
+    output.set(chunk, offset);
+    previousBlock = new Uint8Array(currentBlock);
+    offset += chunk.length;
+  }
+
+  return output;
+}
+
+function hmacSha512(driver: E2eeDriver, message: Uint8Array, key: Uint8Array) {
+  const normalizedKey = normalizeHmacKey(driver, key);
+  const innerKeyPad = new Uint8Array(SHA512_BLOCK_BYTES);
+  const outerKeyPad = new Uint8Array(SHA512_BLOCK_BYTES);
+
+  for (let index = 0; index < SHA512_BLOCK_BYTES; index += 1) {
+    const value = normalizedKey[index];
+    innerKeyPad[index] = value ^ 0x36;
+    outerKeyPad[index] = value ^ 0x5c;
+  }
+
+  const innerHash = driver.hash(concatBytes(innerKeyPad, message));
+  return driver.hash(concatBytes(outerKeyPad, innerHash));
+}
+
+function normalizeHmacKey(driver: E2eeDriver, key: Uint8Array) {
+  if (key.length > SHA512_BLOCK_BYTES) {
+    return padKey(driver.hash(key));
+  }
+
+  return padKey(key);
+}
+
+function padKey(key: Uint8Array) {
+  const paddedKey = new Uint8Array(SHA512_BLOCK_BYTES);
+  paddedKey.set(key.subarray(0, SHA512_BLOCK_BYTES));
+  return paddedKey;
 }
 
 function resolveSaltBytes(driver: E2eeDriver) {
@@ -141,6 +199,10 @@ function resolveSecretboxKeyBytes(driver: E2eeDriver) {
 
 function resolveSecretboxNonceBytes(driver: E2eeDriver) {
   return resolveDriverSize(driver.secretboxNonceBytes);
+}
+
+function resolveHashBytes(driver: E2eeDriver) {
+  return resolveDriverSize(driver.hashBytes);
 }
 
 function resolveDriverSize(value: number | (() => number)) {
@@ -166,4 +228,35 @@ function normalizePasswordSalt(saltHex: string, saltBytes: number) {
 
 function utf8(value: string) {
   return new TextEncoder().encode(value);
+}
+
+function bytesToHex(value: Uint8Array) {
+  return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+function hexToBytes(value: string) {
+  if (value.length % 2 !== 0 || !/^[0-9a-f]*$/i.test(value)) {
+    throw new Error('Invalid hex string.');
+  }
+
+  const output = new Uint8Array(value.length / 2);
+
+  for (let index = 0; index < value.length; index += 2) {
+    output[index / 2] = Number.parseInt(value.slice(index, index + 2), 16);
+  }
+
+  return output;
+}
+
+function concatBytes(...values: Uint8Array[]) {
+  const totalLength = values.reduce((sum, value) => sum + value.length, 0);
+  const output = new Uint8Array(totalLength);
+  let offset = 0;
+
+  for (const value of values) {
+    output.set(value, offset);
+    offset += value.length;
+  }
+
+  return output;
 }

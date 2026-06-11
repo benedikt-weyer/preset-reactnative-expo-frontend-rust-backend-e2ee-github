@@ -1,4 +1,6 @@
 import {
+  crypto_hash,
+  crypto_hash_BYTES,
   crypto_pwhash,
   crypto_pwhash_ALG_ARGON2ID13,
   crypto_pwhash_MEMLIMIT_INTERACTIVE,
@@ -34,6 +36,10 @@ const e2ee = createE2ee({
   encrypt(message, nonce, key) {
     return crypto_secretbox_easy(message, nonce, key);
   },
+  hash(message) {
+    return crypto_hash(message);
+  },
+  hashBytes: crypto_hash_BYTES,
   randomBytes: randombytes_buf,
   ready,
   saltBytes: crypto_pwhash_SALTBYTES,

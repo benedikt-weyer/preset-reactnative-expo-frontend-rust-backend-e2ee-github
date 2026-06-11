@@ -19,6 +19,12 @@ const e2ee = createE2ee({
   encrypt(message, nonce, key) {
     return sodium.crypto_secretbox_easy(message, nonce, key);
   },
+  hash(message) {
+    return sodium.crypto_hash(message);
+  },
+  hashBytes() {
+    return sodium.crypto_hash_BYTES;
+  },
   randomBytes(size) {
     return sodium.randombytes_buf(size);
   },

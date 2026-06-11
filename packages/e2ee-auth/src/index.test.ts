@@ -29,6 +29,7 @@ describe('createE2ee driver access', () => {
   it('reads deferred driver properties after ready resolves', async () => {
     const encrypt = vi.fn((message: Uint8Array) => message);
     const decrypt = vi.fn((ciphertext: Uint8Array) => ciphertext);
+    const hash = vi.fn(() => new Uint8Array(64));
     const randomBytes = vi.fn((size: number) => new Uint8Array(size).fill(0xab));
     const derivePasswordHash = vi.fn(
       (_password: Uint8Array, _salt: Uint8Array, keyLength: number) => new Uint8Array(keyLength),
@@ -37,6 +38,8 @@ describe('createE2ee driver access', () => {
       decrypt,
       derivePasswordHash,
       encrypt,
+      hash,
+      hashBytes: () => 64,
       randomBytes,
       ready: Promise.resolve(),
       saltBytes: () => 4,
@@ -83,6 +86,16 @@ describe('deriveCredentials', () => {
 
     expect(first.email).toBe('person@example.com');
     expect(first.authKey).toMatch(/^[0-9a-f]{128}$/);
+    expect(first.authKey).toBe(
+      'a96636da59512159dae68b179c00951ee0a9d8cb9f1e0498d5fd3e8c5e9e4b6a62b0afb064229bdf745781c497179b0eb16a4c182c0b764bf0078cbe819b342d',
+    );
+    expect(Array.from(first.cryptKey)).toEqual(
+      Array.from(
+        sodium.from_hex(
+          '922fe89d2f7416dfcd9a4a094dcec3f6ee6b8ff3c01e2b35bb0c017ed95248d452b5f07373d3a7b88494a330e58a2af009b97fcffd965de54412ba650fb2ac34',
+        ),
+      ),
+    );
     expect(Array.from(first.cryptKey)).toEqual(Array.from(second.cryptKey));
     expect(first.authKey).toBe(second.authKey);
   });

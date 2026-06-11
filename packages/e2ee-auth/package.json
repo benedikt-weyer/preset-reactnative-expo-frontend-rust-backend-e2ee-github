@@ -15,8 +15,6 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@noble/hashes": "2.2.0",
-    "libsodium-wrappers": "^0.8.4",
     "libsodium-wrappers-sumo": "0.8.4",
     "react-native-libsodium": "^1.7.0"
   },
