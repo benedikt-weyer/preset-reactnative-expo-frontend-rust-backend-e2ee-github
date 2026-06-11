@@ -25,11 +25,30 @@
     "db:restart": "pnpm db:down && pnpm db:up",
 
     "lint": "turbo lint",
+    "lint:backend": "turbo -F backend lint",
+    "lint:docs": "turbo -F docs lint",
+    "lint:web": "turbo -F web lint",
+    "lint:mobile": "turbo -F mobile lint",
+
     "typecheck": "turbo typecheck",
+    "typecheck:backend": "turbo -F backend typecheck",
+    "typecheck:docs": "turbo -F docs typecheck",
+    "typecheck:web": "turbo -F web typecheck",
+    "typecheck:mobile": "turbo -F mobile typecheck",
+
     "check": "turbo typecheck lint check test",
 
+    "format": "turbo format",
+    "format:backend": "turbo -F backend format",
+    "format:docs": "turbo -F docs format",
+    "format:web": "turbo -F web format",
+    "format:mobile": "turbo -F mobile format",
+
     "test": "turbo test",
-    "test:web": "turbo -F web test"
+    "test:web": "turbo -F web test",
+    "test:backend": "turbo -F backend test",
+    "test:docs": "turbo -F docs test",
+    "test:mobile": "turbo -F mobile test"
   },
   "devDependencies": {
     "turbo": "^2.5.4"

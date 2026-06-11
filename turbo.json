@@ -20,6 +20,9 @@
     },
     "check": {
       "outputs": []
+    },
+    "format": {
+      "outputs": []
     }
   }
 }
