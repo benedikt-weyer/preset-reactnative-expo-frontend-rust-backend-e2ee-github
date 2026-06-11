@@ -14,6 +14,7 @@
     "build:docs": "turbo -F docs build",
     "build:mobile": "turbo -F mobile build",
     "build:backend": "cd apps/backend && cargo build",
+    "build:backend:docker": "docker build -t preset-backend -f apps/backend/Dockerfile apps/backend",
 
     "check:backend": "cd apps/backend && cargo check",
     "db:up": "docker compose up -d postgres",
