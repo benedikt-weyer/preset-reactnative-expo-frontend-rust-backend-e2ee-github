@@ -13,9 +13,13 @@ const e2ee = createE2ee({
       sodium.crypto_pwhash_ALG_ARGON2ID13,
     );
   },
-  randomBytes: sodium.randombytes_buf,
+  randomBytes(size) {
+    return sodium.randombytes_buf(size);
+  },
   ready: sodium.ready,
-  saltBytes: sodium.crypto_pwhash_SALTBYTES,
+  saltBytes() {
+    return sodium.crypto_pwhash_SALTBYTES;
+  },
 });
 
 export const { createPasswordSalt, deriveCredentials, normalizeEmail } = e2ee;

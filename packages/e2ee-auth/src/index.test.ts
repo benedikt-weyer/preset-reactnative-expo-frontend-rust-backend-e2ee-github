@@ -23,6 +23,29 @@ import {
   encryptString,
   normalizeEmail,
 } from './index';
+import { createE2ee } from './core';
+
+describe('createE2ee driver access', () => {
+  it('reads deferred driver properties after ready resolves', async () => {
+    const randomBytes = vi.fn((size: number) => new Uint8Array(size).fill(0xab));
+    const derivePasswordHash = vi.fn(
+      (_password: Uint8Array, _salt: Uint8Array, keyLength: number) => new Uint8Array(keyLength),
+    );
+    const e2ee = createE2ee({
+      derivePasswordHash,
+      randomBytes,
+      ready: Promise.resolve(),
+      saltBytes: () => 4,
+    });
+
+    const salt = await e2ee.createPasswordSalt();
+    await e2ee.deriveCredentials('person@example.com', 'correct horse', '00112233');
+
+    expect(salt).toBe('abababab');
+    expect(randomBytes).toHaveBeenCalledWith(4);
+    expect(derivePasswordHash).toHaveBeenCalled();
+  });
+});
 
 describe('normalizeEmail', () => {
   it('trims and lowercases the input email', () => {

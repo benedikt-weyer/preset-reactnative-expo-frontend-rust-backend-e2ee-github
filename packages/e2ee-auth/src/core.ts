@@ -31,7 +31,7 @@ export type PasswordHashDriver = {
   ) => Uint8Array;
   randomBytes: (size: number) => Uint8Array;
   ready: Promise<unknown>;
-  saltBytes: number;
+  saltBytes: number | (() => number);
 };
 
 export function normalizeEmail(email: string) {
@@ -42,7 +42,7 @@ export function createE2ee(driver: PasswordHashDriver) {
   async function createPasswordSalt() {
     await driver.ready;
 
-    return bytesToHex(driver.randomBytes(driver.saltBytes));
+    return bytesToHex(driver.randomBytes(resolveSaltBytes(driver)));
   }
 
   async function deriveCredentials(
@@ -62,10 +62,11 @@ export function createE2ee(driver: PasswordHashDriver) {
     }
 
     await driver.ready;
+    const saltBytes = resolveSaltBytes(driver);
 
     const cryptKey = driver.derivePasswordHash(
       utf8(password),
-      normalizePasswordSalt(saltHex, driver.saltBytes),
+      normalizePasswordSalt(saltHex, saltBytes),
       CRYPT_KEY_LENGTH,
     );
 
@@ -121,6 +122,10 @@ function deriveEncryptionKey(cryptKey: CryptKey) {
 
 function deriveSubkey(cryptKey: CryptKey, info: Uint8Array, keyLength: number) {
   return hkdf(sha512, cryptKey, undefined, info, keyLength);
+}
+
+function resolveSaltBytes(driver: PasswordHashDriver) {
+  return typeof driver.saltBytes === 'function' ? driver.saltBytes() : driver.saltBytes;
 }
 
 function normalizePasswordSalt(saltHex: string, saltBytes: number) {
