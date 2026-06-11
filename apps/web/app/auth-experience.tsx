@@ -249,14 +249,6 @@ export function AuthExperience() {
                   type="password"
                   value={password}
                 />
-                <LabeledInput
-                  autoComplete="url"
-                  label="Backend URL"
-                  onChange={setBackendUrl}
-                  placeholder="http://127.0.0.1:4000"
-                  type="url"
-                  value={backendUrl}
-                />
               </div>
 
               <p className="rounded-[1.5rem] border border-border/60 bg-background/70 px-4 py-3 text-sm leading-6 text-foreground/75">
@@ -335,7 +327,7 @@ type LabeledInputProps = {
   label: string;
   onChange: (value: string) => void;
   placeholder: string;
-  type: 'email' | 'password' | 'url';
+  type: 'email' | 'password';
   value: string;
 };
 

@@ -23,6 +23,7 @@ async function findEnvExamples(rootDir) {
     '.git',
     '.next',
     '.turbo',
+    '.venv',
     'build',
     'dist',
     'node_modules',
@@ -142,21 +143,32 @@ function syncEnvContent(exampleContent, existingContent) {
   const templateLines = parseEnvTemplate(exampleContent);
   const existingValues = parseEnv(existingContent);
 
-  return templateLines
-    .map((line) => {
-      if (line.type !== 'entry') {
-        return line.raw;
-      }
+  return matchTemplateTrailingNewline(
+    exampleContent,
+    templateLines
+      .map((line) => {
+        if (line.type !== 'entry') {
+          return line.raw;
+        }
 
-      const value = resolveEnvValue(
-        line.key,
-        getExistingEnvValue(existingValues, line.key),
-        line.value,
-      );
+        const value = resolveEnvValue(
+          line.key,
+          getExistingEnvValue(existingValues, line.key),
+          line.value,
+        );
 
-      return `${line.key}=${value}`;
-    })
-    .join('\n');
+        return `${line.key}=${value}`;
+      })
+      .join('\n'),
+  );
+}
+
+function matchTemplateTrailingNewline(template, content) {
+  if (!template.endsWith('\n') || content.endsWith('\n')) {
+    return content;
+  }
+
+  return `${content}\n`;
 }
 
 function escapeRegExp(value) {

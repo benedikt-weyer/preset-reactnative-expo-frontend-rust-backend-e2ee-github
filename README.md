@@ -40,6 +40,10 @@ values.
 `apps/backend/.env.example` defaults to the Postgres instance from
 `docker-compose.yml`.
 
+For the Next.js web app, set `API_BASE_URL` on the running server or Docker
+container to prefill the backend URL at runtime. This value is injected by the
+server on request, so it is not baked into the client bundle at build time.
+
 ## Validate
 
 ```bash

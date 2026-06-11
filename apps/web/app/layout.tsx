@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Fraunces, Space_Grotesk } from "next/font/google";
+import Script from "next/script";
 
 import "./globals.css";
 
@@ -26,6 +27,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={`${sans.variable} ${serif.variable} font-sans`}>
+        <Script src="/runtime-config" strategy="beforeInteractive" />
         {children}
       </body>
     </html>

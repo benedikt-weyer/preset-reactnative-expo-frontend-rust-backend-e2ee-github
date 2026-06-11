@@ -5,12 +5,28 @@ export type AuthPreferences = {
   lastEmail: string;
 };
 
-const defaultPreferences: AuthPreferences = {
-  backendUrl: process.env.NEXT_PUBLIC_API_BASE_URL?.trim() ?? '',
-  lastEmail: '',
+type StoredAuthPreferences = {
+  lastEmail?: string;
 };
 
+declare global {
+  interface Window {
+    __RUNTIME_CONFIG__?: {
+      backendUrl?: string;
+    };
+  }
+}
+
+function readDefaultPreferences(): AuthPreferences {
+  return {
+    backendUrl: readRuntimeBackendUrl(),
+    lastEmail: '',
+  };
+}
+
 export function readAuthPreferences(): AuthPreferences {
+  const defaultPreferences = readDefaultPreferences();
+
   if (typeof window === 'undefined') {
     return defaultPreferences;
   }
@@ -22,15 +38,23 @@ export function readAuthPreferences(): AuthPreferences {
       return defaultPreferences;
     }
 
-    const parsedPreferences = JSON.parse(storedPreferences) as Partial<AuthPreferences>;
+    const parsedPreferences = JSON.parse(storedPreferences) as StoredAuthPreferences;
 
     return {
-      backendUrl: parsedPreferences.backendUrl?.trim() ?? defaultPreferences.backendUrl,
+      backendUrl: defaultPreferences.backendUrl,
       lastEmail: parsedPreferences.lastEmail ?? '',
     };
   } catch {
     return defaultPreferences;
   }
+}
+
+function readRuntimeBackendUrl() {
+  if (typeof window === 'undefined') {
+    return '';
+  }
+
+  return window.__RUNTIME_CONFIG__?.backendUrl?.trim() ?? '';
 }
 
 export function writeAuthPreferences(preferences: AuthPreferences) {
@@ -41,7 +65,9 @@ export function writeAuthPreferences(preferences: AuthPreferences) {
   try {
     window.localStorage.setItem(
       AUTH_PREFERENCES_STORAGE_KEY,
-      JSON.stringify(preferences),
+      JSON.stringify({
+        lastEmail: preferences.lastEmail,
+      } satisfies StoredAuthPreferences),
     );
   } catch {
     // Keep auth usable even when local storage is unavailable.

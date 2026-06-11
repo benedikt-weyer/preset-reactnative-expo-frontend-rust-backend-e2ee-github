@@ -114,7 +114,7 @@ function buildApiUrl(baseUrl: string, path: string) {
   const normalizedBaseUrl = baseUrl.trim().replace(/\/+$/, '');
 
   if (!normalizedBaseUrl) {
-    throw new Error('Enter the backend URL before logging in.');
+    throw new Error('Set API_BASE_URL for the web app before logging in.');
   }
 
   return `${normalizedBaseUrl}${path}`;
