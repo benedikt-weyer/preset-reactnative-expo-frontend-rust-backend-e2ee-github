@@ -9,6 +9,7 @@
     ".": "./src/index.ts"
   },
   "scripts": {
+    "test": "vitest run",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -17,6 +18,8 @@
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
-    "typescript": "~6.0.3"
+    "libsodium-wrappers-sumo": "^0.8.4",
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.8"
   }
 }
