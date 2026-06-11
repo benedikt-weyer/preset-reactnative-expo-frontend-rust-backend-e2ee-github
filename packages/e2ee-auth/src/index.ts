@@ -7,13 +7,13 @@ import {
   crypto_pwhash_OPSLIMIT_INTERACTIVE,
   crypto_pwhash_SALTBYTES,
   loadSumoVersion,
+  randombytes_buf,
   ready,
 } from 'react-native-libsodium';
 import nacl from 'tweetnacl';
 
 const AUTH_CONTEXT_PREFIX = utf8('auth:');
 const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
-const SALT_CONTEXT_PREFIX = utf8('e2ee-auth:');
 const CRYPT_KEY_LENGTH = 64;
 
 loadSumoVersion();
@@ -37,9 +37,16 @@ export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
+export async function createPasswordSalt() {
+  await ready;
+
+  return bytesToHex(randombytes_buf(crypto_pwhash_SALTBYTES));
+}
+
 export async function deriveCredentials(
   email: string,
   password: string,
+  saltHex: string,
 ): Promise<DerivedCredentials> {
   const normalizedEmail = normalizeEmail(email);
   const trimmedPassword = password.trim();
@@ -57,7 +64,7 @@ export async function deriveCredentials(
   const cryptKey = crypto_pwhash(
     CRYPT_KEY_LENGTH,
     utf8(password),
-    derivePasswordSalt(normalizedEmail),
+    normalizePasswordSalt(saltHex),
     crypto_pwhash_OPSLIMIT_INTERACTIVE,
     crypto_pwhash_MEMLIMIT_INTERACTIVE,
     crypto_pwhash_ALG_ARGON2ID13,
@@ -103,11 +110,21 @@ function deriveEncryptionKey(cryptKey: CryptKey) {
   );
 }
 
-function derivePasswordSalt(email: string) {
-  return sha512(concatBytes(SALT_CONTEXT_PREFIX, utf8(email))).slice(
-    0,
-    crypto_pwhash_SALTBYTES,
-  );
+function normalizePasswordSalt(saltHex: string) {
+  const normalizedSalt = saltHex.trim().toLowerCase();
+  let saltBytes: Uint8Array;
+
+  try {
+    saltBytes = hexToBytes(normalizedSalt);
+  } catch {
+    throw new Error('Unable to use the stored password salt.');
+  }
+
+  if (saltBytes.length !== crypto_pwhash_SALTBYTES) {
+    throw new Error('Unable to use the stored password salt.');
+  }
+
+  return saltBytes;
 }
 
 function utf8(value: string) {

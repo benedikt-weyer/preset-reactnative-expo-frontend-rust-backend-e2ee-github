@@ -15,15 +15,30 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/salt", post(salt))
         .route("/login", post(login))
         .route("/register", post(register))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AuthRequest {
+pub struct EmailRequest {
+    email: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LoginRequest {
     email: String,
     auth_key: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterRequest {
+    email: String,
+    auth_key: String,
+    salt_hex: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -39,6 +54,12 @@ pub struct AuthResponse {
 pub struct UserResponse {
     id: Uuid,
     email: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaltResponse {
+    salt_hex: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -59,10 +80,11 @@ enum TokenType {
 
 pub async fn register(
     State(state): State<AppState>,
-    Json(payload): Json<AuthRequest>,
+    Json(payload): Json<RegisterRequest>,
 ) -> AppResult<Json<AuthResponse>> {
     let email = normalize_email(&payload.email)?;
     validate_auth_key(&payload.auth_key)?;
+    let auth_salt = normalize_auth_salt(&payload.salt_hex)?;
 
     let existing_user = user::Entity::find()
         .filter(user::Column::Email.eq(email.clone()))
@@ -78,6 +100,7 @@ pub async fn register(
         id: Set(Uuid::new_v4()),
         email: Set(email),
         auth_key_hash: Set(hash_auth_key(&payload.auth_key)),
+        auth_salt: Set(Some(auth_salt)),
         created_at: Set(Utc::now().fixed_offset()),
     }
     .insert(&state.db)
@@ -94,9 +117,31 @@ pub async fn register(
     }))
 }
 
+pub async fn salt(
+    State(state): State<AppState>,
+    Json(payload): Json<EmailRequest>,
+) -> AppResult<Json<SaltResponse>> {
+    let email = normalize_email(&payload.email)?;
+
+    let user = user::Entity::find()
+        .filter(user::Column::Email.eq(email))
+        .one(&state.db)
+        .await
+        .map_err(|_| AppError::internal("failed to query the database"))?
+        .ok_or_else(|| AppError::unauthorized("invalid email or password"))?;
+
+    let auth_salt = user
+        .auth_salt
+        .ok_or_else(|| AppError::unauthorized("invalid email or password"))?;
+
+    Ok(Json(SaltResponse {
+        salt_hex: normalize_auth_salt(&auth_salt)?,
+    }))
+}
+
 pub async fn login(
     State(state): State<AppState>,
-    Json(payload): Json<AuthRequest>,
+    Json(payload): Json<LoginRequest>,
 ) -> AppResult<Json<AuthResponse>> {
     let email = normalize_email(&payload.email)?;
     validate_auth_key(&payload.auth_key)?;
@@ -168,6 +213,22 @@ fn validate_auth_key(auth_key: &str) -> AppResult<()> {
     }
 
     Ok(())
+}
+
+fn normalize_auth_salt(auth_salt: &str) -> AppResult<String> {
+    const AUTH_SALT_BYTES: usize = 16;
+
+    let normalized = auth_salt.trim().to_ascii_lowercase();
+    let decoded = hex::decode(&normalized)
+        .map_err(|_| AppError::bad_request("saltHex must be a valid hexadecimal string"))?;
+
+    if decoded.len() != AUTH_SALT_BYTES {
+        return Err(AppError::bad_request(
+            "saltHex must contain a 16-byte password salt",
+        ));
+    }
+
+    Ok(normalized)
 }
 
 fn hash_auth_key(auth_key: &str) -> String {

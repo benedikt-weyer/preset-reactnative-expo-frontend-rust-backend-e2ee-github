@@ -7,9 +7,14 @@ import {
   useState,
 } from 'react';
 
-import { deriveCredentials, normalizeEmail, type CryptKey } from '@repo/e2ee-auth';
+import {
+  createPasswordSalt,
+  deriveCredentials,
+  normalizeEmail,
+  type CryptKey,
+} from '@repo/e2ee-auth';
 
-import { loginRequest, registerRequest } from './auth-api';
+import { fetchPasswordSalt, loginRequest, registerRequest } from './auth-api';
 import {
   secureStoreAuthPreferences,
   type AuthPreferences,
@@ -90,7 +95,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
       throw new Error('Enter the backend URL before continuing.');
     }
 
-    const credentials = await deriveCredentials(normalizedEmail, password);
+    const saltHex =
+      mode === 'login'
+        ? await fetchPasswordSalt({
+            baseUrl: backendUrl,
+            email: normalizedEmail,
+          })
+        : await createPasswordSalt();
+    const credentials = await deriveCredentials(normalizedEmail, password, saltHex);
     const response =
       mode === 'login'
         ? await loginRequest({
@@ -102,6 +114,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
             authKey: credentials.authKey,
             baseUrl: backendUrl,
             email: credentials.email,
+            saltHex,
           });
 
     setSession({

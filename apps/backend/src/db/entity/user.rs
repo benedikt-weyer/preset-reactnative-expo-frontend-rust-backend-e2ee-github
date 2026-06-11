@@ -8,6 +8,7 @@ pub struct Model {
     #[sea_orm(unique)]
     pub email: String,
     pub auth_key_hash: String,
+    pub auth_salt: Option<String>,
     pub created_at: DateTimeWithTimeZone,
 }
 
