@@ -28,6 +28,7 @@ nav:
   - Overview: index.md
   - Workspace: workspace.md
   - Commands: commands.md
+  - Auth And E2EE: auth-e2ee.md
 markdown_extensions:
   - admonition
   - attr_list
