@@ -30,6 +30,7 @@ pub struct AuthRequest {
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
     token: String,
+    refresh_token: String,
     user: UserResponse,
 }
 
@@ -45,7 +46,15 @@ pub struct UserResponse {
 struct Claims {
     sub: String,
     email: String,
+    token_type: TokenType,
     exp: usize,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum TokenType {
+    Access,
+    Refresh,
 }
 
 async fn register(
@@ -76,7 +85,8 @@ async fn register(
     .map_err(|_| AppError::internal("failed to create the account"))?;
 
     Ok(Json(AuthResponse {
-        token: issue_token(&state, &new_user)?,
+        token: issue_token(&state, &new_user, TokenType::Access)?,
+        refresh_token: issue_token(&state, &new_user, TokenType::Refresh)?,
         user: UserResponse {
             id: new_user.id,
             email: new_user.email,
@@ -109,7 +119,8 @@ async fn login(
     }
 
     Ok(Json(AuthResponse {
-        token: issue_token(&state, &user)?,
+        token: issue_token(&state, &user, TokenType::Access)?,
+        refresh_token: issue_token(&state, &user, TokenType::Refresh)?,
         user: UserResponse {
             id: user.id,
             email: user.email,
@@ -117,13 +128,18 @@ async fn login(
     }))
 }
 
-fn issue_token(state: &AppState, user: &user::Model) -> AppResult<String> {
+fn issue_token(state: &AppState, user: &user::Model, token_type: TokenType) -> AppResult<String> {
+    let ttl_hours = match token_type {
+        TokenType::Access => state.config.jwt_ttl_hours,
+        TokenType::Refresh => state.config.jwt_refresh_ttl_hours,
+    };
     let expires_at = Utc::now()
-        .checked_add_signed(chrono::Duration::hours(state.config.jwt_ttl_hours))
+        .checked_add_signed(chrono::Duration::hours(ttl_hours))
         .ok_or_else(|| AppError::internal("failed to calculate the session expiry"))?;
     let claims = Claims {
         sub: user.id.to_string(),
         email: user.email.clone(),
+        token_type,
         exp: expires_at.timestamp() as usize,
     };
 

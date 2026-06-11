@@ -16,6 +16,7 @@ import {
 } from './auth-storage';
 
 type Session = {
+  refreshToken: string;
   token: string;
   user: {
     email: string;
@@ -104,6 +105,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
           });
 
     setSession({
+      refreshToken: response.refreshToken,
       token: response.token,
       user: response.user,
     });

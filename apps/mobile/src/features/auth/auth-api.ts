@@ -5,6 +5,7 @@ export type AuthApiRequest = {
 };
 
 export type AuthApiResponse = {
+  refreshToken: string;
   token: string;
   user: {
     email: string;
@@ -49,7 +50,11 @@ async function postAuthRequest(
     throw new Error(errorMessage);
   }
 
-  if (!responseBody || !(responseBody as AuthApiResponse).token) {
+  if (
+    !responseBody ||
+    !(responseBody as AuthApiResponse).token ||
+    !(responseBody as AuthApiResponse).refreshToken
+  ) {
     throw new Error('The backend response was incomplete.');
   }
 
