@@ -101,7 +101,6 @@ function collectReleasePlan(commits) {
   let haveVersion = false;
   let finalTag = '';
   let finalCommit = '';
-  const createdTags = [];
   const summaryLines = [];
 
   for (const commit of commits) {
@@ -131,13 +130,25 @@ function collectReleasePlan(commits) {
       );
     }
 
-    if (!taggedCommit) {
-      createdTags.push({ tag: nextTag, commit });
-    }
-
     finalTag = nextTag;
     finalCommit = commit;
     summaryLines.push(`${nextTag} ${commit} ${subject}`);
+  }
+
+  const createdTags = [];
+
+  if (finalTag) {
+    const taggedCommit = getTaggedCommit(finalTag);
+
+    if (taggedCommit && taggedCommit !== finalCommit) {
+      throw new Error(
+        `Computed final tag ${finalTag} for ${finalCommit}, but that tag already points to ${taggedCommit}`,
+      );
+    }
+
+    if (!taggedCommit) {
+      createdTags.push({ tag: finalTag, commit: finalCommit });
+    }
   }
 
   return {
