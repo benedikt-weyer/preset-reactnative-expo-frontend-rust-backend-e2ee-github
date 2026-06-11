@@ -4,6 +4,10 @@ import {
   crypto_pwhash_MEMLIMIT_INTERACTIVE,
   crypto_pwhash_OPSLIMIT_INTERACTIVE,
   crypto_pwhash_SALTBYTES,
+  crypto_secretbox_easy,
+  crypto_secretbox_KEYBYTES,
+  crypto_secretbox_NONCEBYTES,
+  crypto_secretbox_open_easy,
   loadSumoVersion,
   randombytes_buf,
   ready,
@@ -14,6 +18,9 @@ import { createE2ee } from './core';
 loadSumoVersion();
 
 const e2ee = createE2ee({
+  decrypt(ciphertext, nonce, key) {
+    return crypto_secretbox_open_easy(ciphertext, nonce, key);
+  },
   derivePasswordHash(password, salt, keyLength) {
     return crypto_pwhash(
       keyLength,
@@ -24,11 +31,15 @@ const e2ee = createE2ee({
       crypto_pwhash_ALG_ARGON2ID13,
     );
   },
+  encrypt(message, nonce, key) {
+    return crypto_secretbox_easy(message, nonce, key);
+  },
   randomBytes: randombytes_buf,
   ready,
   saltBytes: crypto_pwhash_SALTBYTES,
+  secretboxKeyBytes: crypto_secretbox_KEYBYTES,
+  secretboxNonceBytes: crypto_secretbox_NONCEBYTES,
 });
 
-export const { createPasswordSalt, deriveCredentials, normalizeEmail } = e2ee;
-export { decryptString, encryptString } from './core';
+export const { createPasswordSalt, decryptString, deriveCredentials, encryptString, normalizeEmail } = e2ee;
 export type { CryptKey, DerivedCredentials, EncryptedPayload } from './core';

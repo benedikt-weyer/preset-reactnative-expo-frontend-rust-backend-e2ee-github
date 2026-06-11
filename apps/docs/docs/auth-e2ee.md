@@ -20,7 +20,7 @@ issuance, but it is not involved in local note encryption.
 | --- | --- | --- |
 | Password-based key derivation | Argon2id via libsodium | derive the per-user `cryptKey` |
 | Subkey derivation | HKDF-SHA512 | derive the auth subkey and encryption subkey from `cryptKey` |
-| Local symmetric encryption | XSalsa20-Poly1305 via TweetNaCl `secretbox` | encrypt and decrypt local notes |
+| Local symmetric encryption | XSalsa20-Poly1305 via libsodium `crypto_secretbox` | encrypt and decrypt local notes |
 | Backend auth-key storage | SHA-512 hash of `authKey` | store a verifier instead of the raw derived auth key |
 | Session tokens | JWT signed with backend secret | issue access and refresh tokens |
 

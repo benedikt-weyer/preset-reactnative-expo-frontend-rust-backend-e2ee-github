@@ -27,15 +27,21 @@ import { createE2ee } from './core';
 
 describe('createE2ee driver access', () => {
   it('reads deferred driver properties after ready resolves', async () => {
+    const encrypt = vi.fn((message: Uint8Array) => message);
+    const decrypt = vi.fn((ciphertext: Uint8Array) => ciphertext);
     const randomBytes = vi.fn((size: number) => new Uint8Array(size).fill(0xab));
     const derivePasswordHash = vi.fn(
       (_password: Uint8Array, _salt: Uint8Array, keyLength: number) => new Uint8Array(keyLength),
     );
     const e2ee = createE2ee({
+      decrypt,
       derivePasswordHash,
+      encrypt,
       randomBytes,
       ready: Promise.resolve(),
       saltBytes: () => 4,
+      secretboxKeyBytes: () => 32,
+      secretboxNonceBytes: () => 24,
     });
 
     const salt = await e2ee.createPasswordSalt();

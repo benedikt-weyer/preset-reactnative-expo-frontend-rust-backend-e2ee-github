@@ -3,6 +3,9 @@ import sodium from 'libsodium-wrappers-sumo';
 import { createE2ee } from './core';
 
 const e2ee = createE2ee({
+  decrypt(ciphertext, nonce, key) {
+    return sodium.crypto_secretbox_open_easy(ciphertext, nonce, key);
+  },
   derivePasswordHash(password, salt, keyLength) {
     return sodium.crypto_pwhash(
       keyLength,
@@ -13,6 +16,9 @@ const e2ee = createE2ee({
       sodium.crypto_pwhash_ALG_ARGON2ID13,
     );
   },
+  encrypt(message, nonce, key) {
+    return sodium.crypto_secretbox_easy(message, nonce, key);
+  },
   randomBytes(size) {
     return sodium.randombytes_buf(size);
   },
@@ -20,8 +26,13 @@ const e2ee = createE2ee({
   saltBytes() {
     return sodium.crypto_pwhash_SALTBYTES;
   },
+  secretboxKeyBytes() {
+    return sodium.crypto_secretbox_KEYBYTES;
+  },
+  secretboxNonceBytes() {
+    return sodium.crypto_secretbox_NONCEBYTES;
+  },
 });
 
-export const { createPasswordSalt, deriveCredentials, normalizeEmail } = e2ee;
-export { decryptString, encryptString } from './core';
+export const { createPasswordSalt, decryptString, deriveCredentials, encryptString, normalizeEmail } = e2ee;
 export type { CryptKey, DerivedCredentials, EncryptedPayload } from './core';
