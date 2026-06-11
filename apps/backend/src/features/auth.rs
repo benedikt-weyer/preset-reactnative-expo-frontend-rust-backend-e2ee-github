@@ -57,7 +57,7 @@ enum TokenType {
     Refresh,
 }
 
-async fn register(
+pub async fn register(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
 ) -> AppResult<Json<AuthResponse>> {
@@ -94,7 +94,7 @@ async fn register(
     }))
 }
 
-async fn login(
+pub async fn login(
     State(state): State<AppState>,
     Json(payload): Json<AuthRequest>,
 ) -> AppResult<Json<AuthResponse>> {
