@@ -8,13 +8,18 @@ import {
 } from '@repo/e2ee-auth/native';
 
 import { ScreenShell } from '../components/screen-shell';
+import {
+  deleteTestNote,
+  fetchTestNote,
+  saveTestNote,
+} from '../features/e2ee/test-note-api';
 import { useAuth } from '../features/auth/auth-context';
 import { secureStoreVaultPersistence } from '../features/e2ee/vault-storage';
 import { useAppTheme } from '../features/theme/theme-context';
 import { themeTokens } from '../theme/theme-tokens';
 
 export function HomeScreen() {
-  const { cryptKey, session } = useAuth();
+  const { backendUrl, cryptKey, session } = useAuth();
   const { themeMode } = useAppTheme();
   const tokens = themeTokens[themeMode];
   const [draft, setDraft] = useState('');
@@ -25,26 +30,63 @@ export function HomeScreen() {
     let isMounted = true;
 
     async function hydrateEncryptedNote() {
-      const encryptedPayload = await secureStoreVaultPersistence.read();
+      const localPayload = await secureStoreVaultPersistence.read();
 
       if (!isMounted) {
         return;
       }
 
-      setStoredPayload(encryptedPayload);
-
-      if (!encryptedPayload || !cryptKey) {
+      if (!cryptKey || !session) {
+        setStoredPayload(localPayload);
         return;
       }
 
       try {
-        setDraft(decryptString(encryptedPayload, cryptKey));
-        setStatusMessage('Encrypted note loaded and decrypted locally.');
+        const remotePayload = await fetchTestNote({
+          baseUrl: backendUrl,
+          token: session.token,
+        });
+
+        if (!isMounted) {
+          return;
+        }
+
+        if (remotePayload) {
+          await secureStoreVaultPersistence.write(remotePayload);
+          setStoredPayload(remotePayload);
+          setDraft(decryptString(remotePayload, cryptKey));
+          setStatusMessage('Encrypted note loaded from the backend and decrypted locally.');
+          return;
+        }
+
+        if (localPayload) {
+          setStoredPayload(localPayload);
+          setDraft(decryptString(localPayload, cryptKey));
+          setStatusMessage('Loaded local encrypted note. Save it to sync ciphertext to the backend.');
+          return;
+        }
+
+        setStoredPayload(null);
+        setDraft('');
+        setStatusMessage('No synced note exists yet. Save one to push ciphertext to the backend.');
       } catch (error) {
+        if (localPayload) {
+          try {
+            setStoredPayload(localPayload);
+            setDraft(decryptString(localPayload, cryptKey));
+            setStatusMessage('Backend note unavailable. Loaded the local encrypted cache instead.');
+            return;
+          } catch {
+            // Fall through to the remote error message.
+          }
+        }
+
+        setStoredPayload(null);
+        setDraft('');
         setStatusMessage(
           error instanceof Error
             ? error.message
-            : 'Stored note could not be decrypted.',
+            : 'Unable to load the synced encrypted note.',
         );
       }
     }
@@ -54,29 +96,59 @@ export function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [cryptKey]);
+  }, [backendUrl, cryptKey, session]);
 
   async function handleSave() {
-    if (!cryptKey) {
+    if (!cryptKey || !session) {
       return;
     }
 
-    const encryptedPayload = encryptString(draft, cryptKey);
-    await secureStoreVaultPersistence.write(encryptedPayload);
-    setStoredPayload(encryptedPayload);
-    setStatusMessage('Encrypted note saved to SecureStore.');
+    try {
+      const encryptedPayload = encryptString(draft, cryptKey);
+      const savedPayload = await saveTestNote({
+        baseUrl: backendUrl,
+        payload: encryptedPayload,
+        token: session.token,
+      });
+
+      await secureStoreVaultPersistence.write(savedPayload);
+      setStoredPayload(savedPayload);
+      setStatusMessage('Encrypted note saved to the backend as ciphertext.');
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to save the synced encrypted note.',
+      );
+    }
   }
 
   async function handleClear() {
-    await secureStoreVaultPersistence.clear();
-    setDraft('');
-    setStoredPayload(null);
-    setStatusMessage('Encrypted note cleared from local storage.');
+    if (!session) {
+      return;
+    }
+
+    try {
+      await deleteTestNote({
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+      await secureStoreVaultPersistence.clear();
+      setDraft('');
+      setStoredPayload(null);
+      setStatusMessage('Encrypted note cleared from the backend and local cache.');
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error
+          ? error.message
+          : 'Unable to clear the synced encrypted note.',
+      );
+    }
   }
 
   return (
     <ScreenShell
-      description="Once authenticated, this screen uses the password-derived crypt key on-device to encrypt and decrypt a local note. The backend only sees the derived auth key, never the raw password or plaintext note."
+      description="Once authenticated, this screen uses the password-derived crypt key on-device to encrypt and decrypt a synced note. The backend only sees the derived auth key and ciphertext, never the raw password or plaintext note."
       themeMode={themeMode}
       title="Encrypted home"
     >
@@ -87,7 +159,7 @@ export function HomeScreen() {
         <Text className={`text-base leading-7 ${tokens.body}`}>
           The device derives a crypt key from your typed password and plain email.
           That crypt key encrypts local data, while a separate derived auth key is
-          sent to the Rust backend for registration and login.
+          sent to the Rust backend for registration, login, and ciphertext sync.
         </Text>
       </View>
 
@@ -99,7 +171,7 @@ export function HomeScreen() {
           className={`min-h-[150px] rounded-[22px] border px-4 py-4 text-base ${tokens.card} ${tokens.title}`}
           multiline
           onChangeText={setDraft}
-          placeholder="Write something that should stay encrypted at rest on the device"
+          placeholder="Write something that should stay encrypted between web and mobile"
           placeholderTextColor={themeMode === 'dark' ? '#94a3b8' : '#78716c'}
           textAlignVertical="top"
           value={draft}
@@ -127,7 +199,7 @@ export function HomeScreen() {
           </Pressable>
         </View>
         <Text className={`text-base leading-7 ${tokens.body}`}>
-          {statusMessage || 'Nothing encrypted yet. Save a note to exercise the E2EE flow.'}
+          {statusMessage || 'Nothing encrypted yet. Save a note to exercise the synced E2EE flow.'}
         </Text>
         {storedPayload ? (
           <Text className={`text-sm leading-6 ${tokens.body}`}>

@@ -1,9 +1,15 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{
+    extract::{FromRequestParts, State},
+    http::{header, request::Parts},
+    routing::post,
+    Json, Router,
+};
 use chrono::Utc;
-use jsonwebtoken::{encode, EncodingKey, Header};
+use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
+use std::future::ready;
 use subtle::ConstantTimeEq;
 use uuid::Uuid;
 
@@ -20,13 +26,13 @@ pub fn router() -> Router<AppState> {
         .route("/register", post(register))
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct EmailRequest {
     email: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LoginRequest {
     email: String,
@@ -56,26 +62,31 @@ pub struct UserResponse {
     email: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaltResponse {
     salt_hex: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct Claims {
+pub struct Claims {
     sub: String,
     email: String,
     token_type: TokenType,
     exp: usize,
 }
 
-#[derive(Clone, Copy, Debug, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-enum TokenType {
+pub enum TokenType {
     Access,
     Refresh,
+}
+
+#[derive(Clone, Debug)]
+pub struct AuthenticatedUser {
+    pub user_id: Uuid,
 }
 
 pub async fn register(
@@ -233,4 +244,44 @@ fn normalize_auth_salt(auth_salt: &str) -> AppResult<String> {
 
 fn hash_auth_key(auth_key: &str) -> String {
     hex::encode(Sha512::digest(auth_key.as_bytes()))
+}
+
+impl FromRequestParts<AppState> for AuthenticatedUser {
+    type Rejection = AppError;
+
+    fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> impl std::future::Future<Output = Result<Self, Self::Rejection>> + Send {
+        let result = (|| {
+            let authorization_header = parts
+                .headers
+                .get(header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .ok_or_else(|| AppError::unauthorized("missing bearer token"))?;
+
+            let token = authorization_header
+                .strip_prefix("Bearer ")
+                .or_else(|| authorization_header.strip_prefix("bearer "))
+                .ok_or_else(|| AppError::unauthorized("missing bearer token"))?;
+
+            let token_data = decode::<Claims>(
+                token,
+                &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+                &Validation::default(),
+            )
+            .map_err(|_| AppError::unauthorized("invalid bearer token"))?;
+
+            if token_data.claims.token_type != TokenType::Access {
+                return Err(AppError::unauthorized("an access token is required"));
+            }
+
+            Ok(Self {
+                user_id: Uuid::parse_str(&token_data.claims.sub)
+                    .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
+            })
+        })();
+
+        ready(result)
+    }
 }

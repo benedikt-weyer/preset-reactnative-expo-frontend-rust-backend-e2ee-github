@@ -40,6 +40,7 @@ async fn main() -> AppResult<()> {
     let app = Router::new()
         .route("/health", get(routes::health::health))
         .nest("/api/auth", features::auth::router())
+        .nest("/api/notes", features::notes::router())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());

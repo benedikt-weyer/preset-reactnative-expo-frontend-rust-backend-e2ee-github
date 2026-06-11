@@ -20,6 +20,11 @@ import {
   registerRequest,
   type AuthApiResponse,
 } from '@/lib/auth-api';
+import {
+  deleteTestNote,
+  fetchTestNote,
+  saveTestNote,
+} from '@/lib/test-note-api';
 import { readAuthPreferences, writeAuthPreferences } from '@/lib/auth-storage';
 import {
   clearEncryptedVault,
@@ -32,7 +37,7 @@ type AuthMode = 'login' | 'register';
 const featureNotes = [
   'The typed password stays in the browser and derives two keys locally.',
   'The backend sees only the derived auth key plus the per-account salt.',
-  'Your demo note is encrypted in localStorage and decrypted only after sign-in.',
+  'The shared demo note is synced as ciphertext and decrypted only after sign-in.',
 ];
 
 export function AuthExperience() {
@@ -96,29 +101,15 @@ export function AuthExperience() {
         backendUrl: trimmedBackendUrl,
         lastEmail: credentials.email,
       });
-
-      const encryptedPayload = readEncryptedVault();
-      setStoredPayload(encryptedPayload);
-
-      if (!encryptedPayload) {
-        setDraft('');
-        setStatusMessage(
+      await loadEncryptedNote({
+        cryptKey: credentials.cryptKey,
+        fallbackMessage:
           mode === 'register'
-            ? 'Account created. The crypt key is now active in this browser session.'
-            : 'Logged in. The crypt key is now active in this browser session.'
-        );
-        return;
-      }
-
-      try {
-        setDraft(decryptString(encryptedPayload, credentials.cryptKey));
-        setStatusMessage('Encrypted note loaded and decrypted locally.');
-      } catch (error) {
-        setDraft('');
-        setStatusMessage(
-          error instanceof Error ? error.message : 'Stored note could not be decrypted.',
-        );
-      }
+            ? 'Account created. Save a note to push ciphertext to the backend.'
+            : 'Logged in. Save a note to push ciphertext to the backend.',
+        token: response.token,
+        trimmedBackendUrl,
+      });
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Authentication failed unexpectedly.',
@@ -132,25 +123,115 @@ export function AuthExperience() {
     setSession(null);
     setCryptKey(null);
     setPassword('');
-    setStatusMessage('Signed out. The encrypted note remains stored locally.');
+    setStatusMessage('Signed out. The synced ciphertext remains on the backend and in local cache.');
   }
 
-  function handleSaveNote() {
-    if (!cryptKey) {
+  async function loadEncryptedNote({
+    cryptKey,
+    fallbackMessage,
+    token,
+    trimmedBackendUrl,
+  }: {
+    cryptKey: CryptKey;
+    fallbackMessage: string;
+    token: string;
+    trimmedBackendUrl: string;
+  }) {
+    const localPayload = readEncryptedVault();
+
+    try {
+      const remotePayload = await fetchTestNote({
+        baseUrl: trimmedBackendUrl,
+        token,
+      });
+
+      if (remotePayload) {
+        writeEncryptedVault(remotePayload);
+        setStoredPayload(remotePayload);
+        setDraft(decryptString(remotePayload, cryptKey));
+        setStatusMessage('Encrypted note loaded from the backend and decrypted locally.');
+        return;
+      }
+
+      if (localPayload) {
+        setStoredPayload(localPayload);
+        setDraft(decryptString(localPayload, cryptKey));
+        setStatusMessage('Loaded local encrypted note. Save it to sync ciphertext to the backend.');
+        return;
+      }
+
+      setDraft('');
+      setStoredPayload(null);
+      setStatusMessage(fallbackMessage);
+    } catch (error) {
+      if (localPayload) {
+        setStoredPayload(localPayload);
+
+        try {
+          setDraft(decryptString(localPayload, cryptKey));
+          setStatusMessage(
+            'Backend note unavailable. Loaded the local encrypted cache instead.',
+          );
+          return;
+        } catch {
+          // Fall through to the remote error message.
+        }
+      }
+
+      setDraft('');
+      setStoredPayload(null);
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to load the synced encrypted note.',
+      );
+    }
+  }
+
+  async function handleSaveNote() {
+    if (!cryptKey || !session) {
       return;
     }
 
-    const encryptedPayload = encryptString(draft, cryptKey);
-    writeEncryptedVault(encryptedPayload);
-    setStoredPayload(encryptedPayload);
-    setStatusMessage('Encrypted note saved to localStorage.');
+    setErrorMessage(null);
+
+    try {
+      const encryptedPayload = encryptString(draft, cryptKey);
+      const savedPayload = await saveTestNote({
+        baseUrl: backendUrl,
+        payload: encryptedPayload,
+        token: session.token,
+      });
+
+      writeEncryptedVault(savedPayload);
+      setStoredPayload(savedPayload);
+      setStatusMessage('Encrypted note saved to the backend as ciphertext.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to save the synced encrypted note.',
+      );
+    }
   }
 
-  function handleClearNote() {
-    clearEncryptedVault();
-    setDraft('');
-    setStoredPayload(null);
-    setStatusMessage('Encrypted note cleared from local storage.');
+  async function handleClearNote() {
+    if (!session) {
+      return;
+    }
+
+    setErrorMessage(null);
+
+    try {
+      await deleteTestNote({
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+      clearEncryptedVault();
+      setDraft('');
+      setStoredPayload(null);
+      setStatusMessage('Encrypted note cleared from the backend and local cache.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to clear the synced encrypted note.',
+      );
+    }
   }
 
   return (
@@ -283,13 +364,13 @@ export function AuthExperience() {
                   </p>
                 </div>
                 <p className="text-sm leading-6 text-foreground/75">
-                  Save a note to verify the E2EE path. The ciphertext is stored in localStorage,
+                  Save a note to verify the E2EE path. The backend stores only ciphertext,
                   and only the current password-derived crypt key can decrypt it.
                 </p>
                 <textarea
                   className="min-h-44 rounded-[1.5rem] border border-border bg-white px-4 py-4 text-base text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
                   onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Write something that should stay encrypted at rest in the browser"
+                  placeholder="Write something that should stay encrypted between web and mobile"
                   value={draft}
                 />
                 <div className="flex flex-col gap-3 sm:flex-row">
@@ -304,7 +385,10 @@ export function AuthExperience() {
               </div>
 
               <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-muted/45 p-5 text-sm leading-6 text-foreground/75">
-                <p>{statusMessage || 'Nothing encrypted yet. Save a note to exercise the E2EE flow.'}</p>
+                <p>
+                  {statusMessage ||
+                    'Nothing encrypted yet. Save a note to exercise the synced E2EE flow.'}
+                </p>
                 {storedPayload ? (
                   <p>
                     Ciphertext preview:{' '}
