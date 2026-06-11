@@ -1,12 +1,9 @@
 use axum::{
-    extract::{FromRequestParts, State},
+    extract::FromRequestParts,
     http::{header, request::Parts},
-    routing::post,
-    Json, Router,
 };
 use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, QueryFilter, Set};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::future::ready;
@@ -15,62 +12,31 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    db::entity::user,
+    domains::auth::{entity, repository},
     error::{AppError, AppResult},
 };
 
-pub fn router() -> Router<AppState> {
-    Router::new()
-        .route("/salt", post(salt))
-        .route("/login", post(login))
-        .route("/register", post(register))
+pub struct RegisterCommand {
+    pub email: String,
+    pub auth_key: String,
+    pub salt_hex: String,
+}
+
+pub struct LoginCommand {
+    pub email: String,
+    pub auth_key: String,
+}
+
+pub struct AuthSession {
+    pub token: String,
+    pub refresh_token: String,
+    pub user_id: Uuid,
+    pub email: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct EmailRequest {
-    email: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct LoginRequest {
-    email: String,
-    auth_key: String,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RegisterRequest {
-    email: String,
-    auth_key: String,
-    salt_hex: String,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AuthResponse {
-    token: String,
-    refresh_token: String,
-    user: UserResponse,
-}
-
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserResponse {
-    id: Uuid,
-    email: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SaltResponse {
-    salt_hex: String,
-}
-
-#[derive(Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct Claims {
+struct Claims {
     sub: String,
     email: String,
     token_type: TokenType,
@@ -79,7 +45,7 @@ pub struct Claims {
 
 #[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
-pub enum TokenType {
+enum TokenType {
     Access,
     Refresh,
 }
@@ -89,82 +55,50 @@ pub struct AuthenticatedUser {
     pub user_id: Uuid,
 }
 
-pub async fn register(
-    State(state): State<AppState>,
-    Json(payload): Json<RegisterRequest>,
-) -> AppResult<Json<AuthResponse>> {
-    let email = normalize_email(&payload.email)?;
-    validate_auth_key(&payload.auth_key)?;
-    let auth_salt = normalize_auth_salt(&payload.salt_hex)?;
+pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<AuthSession> {
+    let email = normalize_email(&command.email)?;
+    validate_auth_key(&command.auth_key)?;
+    let auth_salt = normalize_auth_salt(&command.salt_hex)?;
 
-    let existing_user = user::Entity::find()
-        .filter(user::Column::Email.eq(email.clone()))
-        .one(&state.db)
-        .await
-        .map_err(|_| AppError::internal("failed to query the database"))?;
-
-    if existing_user.is_some() {
+    if repository::find_user_by_email(&state.db, &email).await?.is_some() {
         return Err(AppError::conflict("an account already exists for this email"));
     }
 
-    let new_user = user::ActiveModel {
-        id: Set(Uuid::new_v4()),
-        email: Set(email),
-        auth_key_hash: Set(hash_auth_key(&payload.auth_key)),
-        auth_salt: Set(Some(auth_salt)),
-        created_at: Set(Utc::now().fixed_offset()),
-    }
-    .insert(&state.db)
-    .await
-    .map_err(|_| AppError::internal("failed to create the account"))?;
+    let new_user = repository::insert_user(
+        &state.db,
+        email,
+        hash_auth_key(&command.auth_key),
+        auth_salt,
+        Utc::now().fixed_offset(),
+    )
+    .await?;
 
-    Ok(Json(AuthResponse {
-        token: issue_token(&state, &new_user, TokenType::Access)?,
-        refresh_token: issue_token(&state, &new_user, TokenType::Refresh)?,
-        user: UserResponse {
-            id: new_user.id,
-            email: new_user.email,
-        },
-    }))
+    build_auth_session(state, &new_user)
 }
 
-pub async fn salt(
-    State(state): State<AppState>,
-    Json(payload): Json<EmailRequest>,
-) -> AppResult<Json<SaltResponse>> {
-    let email = normalize_email(&payload.email)?;
+pub async fn salt(state: &AppState, email: &str) -> AppResult<String> {
+    let email = normalize_email(email)?;
 
-    let user = user::Entity::find()
-        .filter(user::Column::Email.eq(email))
-        .one(&state.db)
-        .await
-        .map_err(|_| AppError::internal("failed to query the database"))?
+    let user = repository::find_user_by_email(&state.db, &email)
+        .await?
         .ok_or_else(|| AppError::unauthorized("invalid email or password"))?;
 
     let auth_salt = user
         .auth_salt
         .ok_or_else(|| AppError::unauthorized("invalid email or password"))?;
 
-    Ok(Json(SaltResponse {
-        salt_hex: normalize_auth_salt(&auth_salt)?,
-    }))
+    normalize_auth_salt(&auth_salt)
 }
 
-pub async fn login(
-    State(state): State<AppState>,
-    Json(payload): Json<LoginRequest>,
-) -> AppResult<Json<AuthResponse>> {
-    let email = normalize_email(&payload.email)?;
-    validate_auth_key(&payload.auth_key)?;
+pub async fn login(state: &AppState, command: LoginCommand) -> AppResult<AuthSession> {
+    let email = normalize_email(&command.email)?;
+    validate_auth_key(&command.auth_key)?;
 
-    let user = user::Entity::find()
-        .filter(user::Column::Email.eq(email))
-        .one(&state.db)
-        .await
-        .map_err(|_| AppError::internal("failed to query the database"))?
+    let user = repository::find_user_by_email(&state.db, &email)
+        .await?
         .ok_or_else(|| AppError::unauthorized("invalid email or auth key"))?;
 
-    let supplied_hash = hash_auth_key(&payload.auth_key);
+    let supplied_hash = hash_auth_key(&command.auth_key);
     if supplied_hash
         .as_bytes()
         .ct_eq(user.auth_key_hash.as_bytes())
@@ -174,17 +108,19 @@ pub async fn login(
         return Err(AppError::unauthorized("invalid email or auth key"));
     }
 
-    Ok(Json(AuthResponse {
-        token: issue_token(&state, &user, TokenType::Access)?,
-        refresh_token: issue_token(&state, &user, TokenType::Refresh)?,
-        user: UserResponse {
-            id: user.id,
-            email: user.email,
-        },
-    }))
+    build_auth_session(state, &user)
 }
 
-fn issue_token(state: &AppState, user: &user::Model, token_type: TokenType) -> AppResult<String> {
+fn build_auth_session(state: &AppState, user: &entity::Model) -> AppResult<AuthSession> {
+    Ok(AuthSession {
+        token: issue_token(state, user, TokenType::Access)?,
+        refresh_token: issue_token(state, user, TokenType::Refresh)?,
+        user_id: user.id,
+        email: user.email.clone(),
+    })
+}
+
+fn issue_token(state: &AppState, user: &entity::Model, token_type: TokenType) -> AppResult<String> {
     let ttl_minutes = match token_type {
         TokenType::Access => state.config.jwt_ttl_minutes,
         TokenType::Refresh => state.config.jwt_refresh_ttl_minutes,

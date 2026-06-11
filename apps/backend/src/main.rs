@@ -1,9 +1,8 @@
 mod app_state;
 mod config;
 mod db;
+mod domains;
 mod error;
-mod features;
-mod routes;
 
 use std::time::Duration;
 
@@ -38,9 +37,9 @@ async fn main() -> AppResult<()> {
     let state = AppState { config, db };
 
     let app = Router::new()
-        .route("/health", get(routes::health::health))
-        .nest("/api/auth", features::auth::router())
-        .nest("/api/notes", features::notes::router())
+        .route("/health", get(domains::system::health))
+        .nest("/api/auth", domains::auth::router())
+        .nest("/api/notes", domains::notes::router())
         .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state.clone());
