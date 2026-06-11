@@ -8,6 +8,7 @@ backend using Axum, SeaORM, and Postgres.
 - `apps/mobile`: Expo React Native app with NativeWind styling
 - `apps/mobile`: registration/login flow and local E2EE note demo
 - `apps/mobile`: light and dark mode persisted in `expo-secure-store`
+- `apps/web`: Next.js app with Tailwind CSS and shadcn/ui components
 - `apps/backend`: Axum API with `/health`, `/api/auth/register`, and `/api/auth/login`
 - `apps/backend`: SeaORM migrations run automatically on startup
 - `packages/e2ee-auth`: shared password-to-crypt-key/auth-key derivation and local encryption helpers
@@ -22,6 +23,7 @@ pnpm db:up
 pnpm dev:backend
 pnpm dev
 pnpm dev:mobile
+pnpm dev:web
 pnpm dev:docs
 ```
 
@@ -42,6 +44,7 @@ values.
 
 ```bash
 pnpm check:backend
+pnpm build:web
 pnpm build:docs
 pnpm typecheck
 ```

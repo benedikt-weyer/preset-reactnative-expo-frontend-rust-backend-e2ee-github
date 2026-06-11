@@ -2,7 +2,7 @@
   "$schema": "https://turbo.build/schema.json",
   "tasks": {
     "build": {
-      "outputs": ["site/**"]
+      "outputs": ["site/**", ".next/**", "!.next/cache/**"]
     },
     "dev": {
       "cache": false,

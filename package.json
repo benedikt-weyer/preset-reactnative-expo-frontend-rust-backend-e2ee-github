@@ -7,12 +7,14 @@
     "devstop": "pnpm db:down",
     "dev:backend": "turbo -F backend dev --ui=tui",
     "dev:docs": "turbo -F docs dev",
+    "dev:web": "turbo -F web dev --ui=tui",
     "dev:mobile": "turbo -F mobile dev --ui=tui",
 
     "setupenv": "node ./scripts/setupenv.mjs",
 
     "build": "turbo build",
     "build:docs": "turbo -F docs build",
+    "build:web": "turbo -F web build",
     "build:mobile": "turbo -F mobile build",
     "build:backend": "cd apps/backend && cargo build",
     "build:backend:docker": "docker build -t preset-backend -f apps/backend/Dockerfile apps/backend",
