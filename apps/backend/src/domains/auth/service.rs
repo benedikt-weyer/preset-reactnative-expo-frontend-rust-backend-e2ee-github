@@ -60,8 +60,13 @@ pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<A
     validate_auth_key(&command.auth_key)?;
     let auth_salt = normalize_auth_salt(&command.salt_hex)?;
 
-    if repository::find_user_by_email(&state.db, &email).await?.is_some() {
-        return Err(AppError::conflict("an account already exists for this email"));
+    if repository::find_user_by_email(&state.db, &email)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::conflict(
+            "an account already exists for this email",
+        ));
     }
 
     let new_user = repository::insert_user(
@@ -256,8 +261,12 @@ mod tests {
     async fn normalize_email_rejects_missing_at_symbol() {
         let error = normalize_email("not-an-email").expect_err("email should be rejected");
 
-        assert_error_response(error, StatusCode::BAD_REQUEST, "a valid email address is required")
-            .await;
+        assert_error_response(
+            error,
+            StatusCode::BAD_REQUEST,
+            "a valid email address is required",
+        )
+        .await;
     }
 
     #[test]
@@ -281,8 +290,8 @@ mod tests {
 
     #[test]
     fn normalize_auth_salt_trims_and_lowercases() {
-        let normalized =
-            normalize_auth_salt("  AABBCCDDEEFF00112233445566778899  ").expect("salt should normalize");
+        let normalized = normalize_auth_salt("  AABBCCDDEEFF00112233445566778899  ")
+            .expect("salt should normalize");
 
         assert_eq!(normalized, "aabbccddeeff00112233445566778899");
     }
@@ -301,8 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn normalize_auth_salt_rejects_wrong_byte_length() {
-        let error =
-            normalize_auth_salt("aabbccdd").expect_err("short salt should be rejected");
+        let error = normalize_auth_salt("aabbccdd").expect_err("short salt should be rejected");
 
         assert_error_response(
             error,

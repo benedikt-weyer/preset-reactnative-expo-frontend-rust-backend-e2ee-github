@@ -1,8 +1,11 @@
-use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use sea_orm::entity::prelude::DateTimeWithTimeZone;
+use sea_orm::{ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use uuid::Uuid;
 
-use crate::{domains::auth::entity, error::{AppError, AppResult}};
+use crate::{
+    domains::auth::entity,
+    error::{AppError, AppResult},
+};
 
 pub async fn find_user_by_email(
     db: &DatabaseConnection,

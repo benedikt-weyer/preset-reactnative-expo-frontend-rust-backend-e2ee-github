@@ -30,9 +30,9 @@ async fn main() -> AppResult<()> {
     let config = Config::from_env()?;
     let db = wait_for_database(&config.database_url).await?;
 
-    Migrator::up(&db, None)
-        .await
-        .map_err(|error| AppError::internal(format!("failed to run database migrations: {error}")))?;
+    Migrator::up(&db, None).await.map_err(|error| {
+        AppError::internal(format!("failed to run database migrations: {error}"))
+    })?;
 
     let state = AppState { config, db };
 

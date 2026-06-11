@@ -2,11 +2,7 @@ use axum::{extract::State, routing::post, Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{
-    app_state::AppState,
-    domains::auth::service,
-    error::AppResult,
-};
+use crate::{app_state::AppState, domains::auth::service, error::AppResult};
 
 pub fn router() -> Router<AppState> {
     Router::new()

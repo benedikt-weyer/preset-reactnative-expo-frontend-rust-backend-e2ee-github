@@ -1,11 +1,14 @@
+use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use sea_orm::{
     ActiveModelTrait, ColumnTrait, DatabaseConnection, EntityTrait, ModelTrait, QueryFilter,
     QueryOrder, Set,
 };
-use sea_orm::entity::prelude::DateTimeWithTimeZone;
 use uuid::Uuid;
 
-use crate::{domains::notes::entity, error::{AppError, AppResult}};
+use crate::{
+    domains::notes::entity,
+    error::{AppError, AppResult},
+};
 
 pub struct NewNote {
     pub user_id: Uuid,

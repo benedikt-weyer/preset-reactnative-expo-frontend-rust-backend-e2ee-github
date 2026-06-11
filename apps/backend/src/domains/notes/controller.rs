@@ -8,14 +8,20 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    domains::{auth::AuthenticatedUser, notes::{entity, service}},
+    domains::{
+        auth::AuthenticatedUser,
+        notes::{entity, service},
+    },
     error::AppResult,
 };
 
 pub fn router() -> Router<AppState> {
     Router::new()
         .route("/", get(list_notes).post(create_note))
-        .route("/{note_id}", get(get_note).put(update_note).delete(delete_note))
+        .route(
+            "/{note_id}",
+            get(get_note).put(update_note).delete(delete_note),
+        )
 }
 
 #[derive(Debug, Deserialize)]
@@ -71,7 +77,13 @@ pub async fn update_note(
     authenticated_user: AuthenticatedUser,
     Json(payload): Json<SaveNoteRequest>,
 ) -> AppResult<Json<NoteResponse>> {
-    let note = service::update_note(&state, &authenticated_user, note_id, map_save_command(payload)).await?;
+    let note = service::update_note(
+        &state,
+        &authenticated_user,
+        note_id,
+        map_save_command(payload),
+    )
+    .await?;
     Ok(Json(map_note_response(note)))
 }
 

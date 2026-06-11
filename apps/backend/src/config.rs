@@ -26,13 +26,9 @@ impl Config {
             AppError::internal("DATABASE_URL must be set before the backend can start")
         })?;
 
-        let jwt_secret = env::var("JWT_SECRET")
-            .unwrap_or_else(|_| "dev-only-secret-change-me".to_owned());
-        let jwt_ttl_minutes = read_i64_env_with_legacy(
-            "JWT_TTL_MINUTES",
-            "JWT_TTL_HOURS",
-            24 * 60,
-        );
+        let jwt_secret =
+            env::var("JWT_SECRET").unwrap_or_else(|_| "dev-only-secret-change-me".to_owned());
+        let jwt_ttl_minutes = read_i64_env_with_legacy("JWT_TTL_MINUTES", "JWT_TTL_HOURS", 24 * 60);
         let jwt_refresh_ttl_minutes = read_i64_env_with_legacy(
             "JWT_REFRESH_TTL_MINUTES",
             "JWT_REFRESH_TTL_HOURS",

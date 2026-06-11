@@ -3,7 +3,10 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    domains::{auth::AuthenticatedUser, notes::{entity, repository}},
+    domains::{
+        auth::AuthenticatedUser,
+        notes::{entity, repository},
+    },
     error::{AppError, AppResult},
 };
 
@@ -94,9 +97,7 @@ pub async fn delete_note(
 
 fn validate_payload(payload: &SaveNoteCommand) -> AppResult<()> {
     if payload.algorithm.trim() != "xsalsa20-poly1305" {
-        return Err(AppError::validation(
-            "algorithm must be xsalsa20-poly1305",
-        ));
+        return Err(AppError::validation("algorithm must be xsalsa20-poly1305"));
     }
 
     if payload.version != 1 {
