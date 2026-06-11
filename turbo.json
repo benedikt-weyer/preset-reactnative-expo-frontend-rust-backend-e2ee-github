@@ -11,6 +11,9 @@
     },
     "typecheck": {
       "outputs": []
+    },
+    "lint": {
+      "outputs": []
     }
   }
 }

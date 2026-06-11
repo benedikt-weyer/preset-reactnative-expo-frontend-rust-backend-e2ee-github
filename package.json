@@ -3,15 +3,22 @@
   "private": true,
   "packageManager": "pnpm@10.33.4",
   "scripts": {
-    "build": "turbo build",
-    "build:docs": "turbo -F docs build",
-    "check:backend": "cd apps/backend && cargo check",
-    "db:up": "docker compose up -d postgres",
     "dev": "turbo dev --ui=tui",
     "dev:backend": "cd apps/backend && cargo run",
     "dev:docs": "turbo -F docs dev",
     "dev:mobile": "turbo -F mobile dev --ui=tui",
+
     "setupenv": "node ./scripts/setupenv.mjs",
+
+    "build": "turbo build",
+    "build:docs": "turbo -F docs build",
+    "build:mobile": "turbo -F mobile build",
+    "build:backend": "cd apps/backend && cargo build",
+
+    "check:backend": "cd apps/backend && cargo check",
+    "db:up": "docker compose up -d postgres",
+
+    "lint": "turbo lint",
     "typecheck": "turbo typecheck"
   },
   "devDependencies": {
