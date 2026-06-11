@@ -1,6 +1,6 @@
 import * as SecureStore from 'expo-secure-store';
 
-import type { EncryptedPayload } from '@repo/e2ee-auth';
+import type { EncryptedPayload } from '@repo/e2ee-auth/native';
 
 const E2EE_VAULT_STORAGE_KEY = 'e2ee-vault-note';
 

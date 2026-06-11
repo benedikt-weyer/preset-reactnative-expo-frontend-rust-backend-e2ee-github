@@ -112,6 +112,9 @@ importers:
       '@radix-ui/react-slot':
         specifier: ^1.2.4
         version: 1.2.5(@types/react@19.2.17)(react@19.2.3)
+      '@repo/e2ee-auth':
+        specifier: workspace:*
+        version: link:../../packages/e2ee-auth
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -173,6 +176,12 @@ importers:
       '@noble/hashes':
         specifier: ^1.8.0
         version: 1.8.0
+      libsodium-wrappers:
+        specifier: ^0.8.4
+        version: 0.8.4
+      libsodium-wrappers-sumo:
+        specifier: ^0.8.4
+        version: 0.8.4
       react-native-libsodium:
         specifier: ^1.7.0
         version: 1.7.0(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)
@@ -180,9 +189,6 @@ importers:
         specifier: ^1.0.3
         version: 1.0.3
     devDependencies:
-      libsodium-wrappers-sumo:
-        specifier: ^0.8.4
-        version: 0.8.4
       typescript:
         specifier: ~6.0.3
         version: 6.0.3

@@ -12,7 +12,7 @@ import {
   deriveCredentials,
   normalizeEmail,
   type CryptKey,
-} from '@repo/e2ee-auth';
+} from '@repo/e2ee-auth/native';
 
 import { fetchPasswordSalt, loginRequest, registerRequest } from './auth-api';
 import {

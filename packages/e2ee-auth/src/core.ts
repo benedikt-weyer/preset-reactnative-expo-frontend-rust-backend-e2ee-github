@@ -1,0 +1,145 @@
+import { hkdf } from '@noble/hashes/hkdf';
+import { sha512 } from '@noble/hashes/sha2';
+import { bytesToHex, hexToBytes, randomBytes } from '@noble/hashes/utils';
+import nacl from 'tweetnacl';
+
+const AUTH_CONTEXT_PREFIX = utf8('auth:');
+const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
+const AUTH_KEY_LENGTH = 64;
+const CRYPT_KEY_LENGTH = 64;
+
+export type CryptKey = Uint8Array;
+
+export type DerivedCredentials = {
+  authKey: string;
+  cryptKey: CryptKey;
+  email: string;
+};
+
+export type EncryptedPayload = {
+  algorithm: 'xsalsa20-poly1305';
+  ciphertextHex: string;
+  nonceHex: string;
+  version: 1;
+};
+
+export type PasswordHashDriver = {
+  derivePasswordHash: (
+    password: Uint8Array,
+    salt: Uint8Array,
+    keyLength: number,
+  ) => Uint8Array;
+  randomBytes: (size: number) => Uint8Array;
+  ready: Promise<unknown>;
+  saltBytes: number;
+};
+
+export function normalizeEmail(email: string) {
+  return email.trim().toLowerCase();
+}
+
+export function createE2ee(driver: PasswordHashDriver) {
+  async function createPasswordSalt() {
+    await driver.ready;
+
+    return bytesToHex(driver.randomBytes(driver.saltBytes));
+  }
+
+  async function deriveCredentials(
+    email: string,
+    password: string,
+    saltHex: string,
+  ): Promise<DerivedCredentials> {
+    const normalizedEmail = normalizeEmail(email);
+    const trimmedPassword = password.trim();
+
+    if (!normalizedEmail.includes('@')) {
+      throw new Error('Enter a valid email address.');
+    }
+
+    if (!trimmedPassword) {
+      throw new Error('Enter a password.');
+    }
+
+    await driver.ready;
+
+    const cryptKey = driver.derivePasswordHash(
+      utf8(password),
+      normalizePasswordSalt(saltHex, driver.saltBytes),
+      CRYPT_KEY_LENGTH,
+    );
+
+    return {
+      authKey: bytesToHex(deriveSubkey(cryptKey, AUTH_CONTEXT_PREFIX, AUTH_KEY_LENGTH)),
+      cryptKey,
+      email: normalizedEmail,
+    };
+  }
+
+  return {
+    createPasswordSalt,
+    decryptString,
+    deriveCredentials,
+    encryptString,
+    normalizeEmail,
+  };
+}
+
+export function encryptString(value: string, cryptKey: CryptKey): EncryptedPayload {
+  const nonce = randomBytes(nacl.secretbox.nonceLength);
+  const ciphertext = nacl.secretbox(utf8(value), nonce, deriveEncryptionKey(cryptKey));
+
+  return {
+    algorithm: 'xsalsa20-poly1305',
+    ciphertextHex: bytesToHex(ciphertext),
+    nonceHex: bytesToHex(nonce),
+    version: 1,
+  };
+}
+
+export function decryptString(payload: EncryptedPayload, cryptKey: CryptKey) {
+  const plaintext = nacl.secretbox.open(
+    hexToBytes(payload.ciphertextHex),
+    hexToBytes(payload.nonceHex),
+    deriveEncryptionKey(cryptKey),
+  );
+
+  if (!plaintext) {
+    throw new Error('Unable to decrypt data with the current password.');
+  }
+
+  return new TextDecoder().decode(plaintext);
+}
+
+function deriveEncryptionKey(cryptKey: CryptKey) {
+  return deriveSubkey(
+    cryptKey,
+    ENCRYPTION_CONTEXT_PREFIX,
+    nacl.secretbox.keyLength,
+  );
+}
+
+function deriveSubkey(cryptKey: CryptKey, info: Uint8Array, keyLength: number) {
+  return hkdf(sha512, cryptKey, undefined, info, keyLength);
+}
+
+function normalizePasswordSalt(saltHex: string, saltBytes: number) {
+  const normalizedSalt = saltHex.trim().toLowerCase();
+  let decodedSalt: Uint8Array;
+
+  try {
+    decodedSalt = hexToBytes(normalizedSalt);
+  } catch {
+    throw new Error('Unable to use the stored password salt.');
+  }
+
+  if (decodedSalt.length !== saltBytes) {
+    throw new Error('Unable to use the stored password salt.');
+  }
+
+  return decodedSalt;
+}
+
+function utf8(value: string) {
+  return new TextEncoder().encode(value);
+}

@@ -1,7 +1,11 @@
 import { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
-import { decryptString, encryptString, type EncryptedPayload } from '@repo/e2ee-auth';
+import {
+  decryptString,
+  encryptString,
+  type EncryptedPayload,
+} from '@repo/e2ee-auth/native';
 
 import { ScreenShell } from '../components/screen-shell';
 import { useAuth } from '../features/auth/auth-context';

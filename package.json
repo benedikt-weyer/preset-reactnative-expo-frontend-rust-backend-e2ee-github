@@ -26,7 +26,9 @@
     "db:restart": "pnpm db:down && pnpm db:up",
 
     "lint": "turbo lint",
-    "typecheck": "turbo typecheck"
+    "typecheck": "turbo typecheck",
+
+    "test": "turbo test"
   },
   "devDependencies": {
     "turbo": "^2.5.4"
