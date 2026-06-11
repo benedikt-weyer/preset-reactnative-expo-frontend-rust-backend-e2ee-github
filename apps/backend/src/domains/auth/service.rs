@@ -221,3 +221,130 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
         ready(result)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::{
+        body::{to_bytes, Body},
+        http::{Request, StatusCode},
+        response::IntoResponse,
+    };
+
+    async fn assert_error_response(error: AppError, status: StatusCode, message: &str) {
+        let response = error.into_response();
+
+        assert_eq!(response.status(), status);
+
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        let payload: serde_json::Value =
+            serde_json::from_slice(&body).expect("response body should be valid json");
+
+        assert_eq!(payload, serde_json::json!({ "error": message }));
+    }
+
+    #[test]
+    fn normalize_email_trims_and_lowercases() {
+        let normalized = normalize_email("  USER@Example.COM  ").expect("email should normalize");
+
+        assert_eq!(normalized, "user@example.com");
+    }
+
+    #[tokio::test]
+    async fn normalize_email_rejects_missing_at_symbol() {
+        let error = normalize_email("not-an-email").expect_err("email should be rejected");
+
+        assert_error_response(error, StatusCode::BAD_REQUEST, "a valid email address is required")
+            .await;
+    }
+
+    #[test]
+    fn validate_auth_key_accepts_32_character_key() {
+        let auth_key = "a".repeat(32);
+
+        validate_auth_key(&auth_key).expect("32-character auth key should be accepted");
+    }
+
+    #[tokio::test]
+    async fn validate_auth_key_rejects_short_key() {
+        let error = validate_auth_key("short-key").expect_err("short key should be rejected");
+
+        assert_error_response(
+            error,
+            StatusCode::BAD_REQUEST,
+            "authKey must be a non-empty derived key string",
+        )
+        .await;
+    }
+
+    #[test]
+    fn normalize_auth_salt_trims_and_lowercases() {
+        let normalized =
+            normalize_auth_salt("  AABBCCDDEEFF00112233445566778899  ").expect("salt should normalize");
+
+        assert_eq!(normalized, "aabbccddeeff00112233445566778899");
+    }
+
+    #[tokio::test]
+    async fn normalize_auth_salt_rejects_invalid_hex() {
+        let error = normalize_auth_salt("not-hex").expect_err("invalid hex should be rejected");
+
+        assert_error_response(
+            error,
+            StatusCode::BAD_REQUEST,
+            "saltHex must be a valid hexadecimal string",
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn normalize_auth_salt_rejects_wrong_byte_length() {
+        let error =
+            normalize_auth_salt("aabbccdd").expect_err("short salt should be rejected");
+
+        assert_error_response(
+            error,
+            StatusCode::BAD_REQUEST,
+            "saltHex must contain a 16-byte password salt",
+        )
+        .await;
+    }
+
+    #[test]
+    fn hash_auth_key_returns_sha512_hex_digest() {
+        let auth_key = "client-derived-auth-key-material";
+
+        assert_eq!(
+            hash_auth_key(auth_key),
+            "54f2b8147b5dc3528ac08a67f6f3c1bd4e04a738d3e1652f721b9a550a5c2e193b00f033f4d8a1ca102810c4a8e03d105b3a979045d34918a6df35947da3238b"
+        );
+    }
+
+    #[tokio::test]
+    async fn extractor_requires_bearer_token_header() {
+        let mut parts = Request::builder()
+            .uri("/")
+            .body(Body::empty())
+            .expect("request should build")
+            .into_parts()
+            .0;
+        let state = AppState {
+            config: crate::config::Config {
+                bind_addr: "127.0.0.1:4000".parse().expect("bind addr should parse"),
+                database_url: "postgres://example.invalid/backend".to_owned(),
+                jwt_secret: "test-secret".to_owned(),
+                jwt_ttl_minutes: 15,
+                jwt_refresh_ttl_minutes: 60,
+            },
+            db: sea_orm::DatabaseConnection::Disconnected,
+        };
+
+        let error = AuthenticatedUser::from_request_parts(&mut parts, &state)
+            .await
+            .expect_err("missing header should be rejected");
+
+        assert_error_response(error, StatusCode::UNAUTHORIZED, "missing bearer token").await;
+    }
+}
