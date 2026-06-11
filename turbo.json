@@ -6,7 +6,8 @@
     },
     "dev": {
       "cache": false,
-      "persistent": true
+      "persistent": true,
+      "interactive": true
     },
     "typecheck": {
       "outputs": []

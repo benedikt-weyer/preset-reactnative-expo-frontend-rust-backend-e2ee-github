@@ -5,9 +5,9 @@
   "scripts": {
     "build": "turbo build",
     "build:docs": "turbo -F docs build",
-    "dev": "turbo dev",
+    "dev": "turbo dev --ui=tui",
     "dev:docs": "turbo -F docs dev",
-    "dev:mobile": "turbo -F mobile dev",
+    "dev:mobile": "turbo -F mobile dev --ui=tui",
     "typecheck": "turbo typecheck"
   },
   "devDependencies": {
