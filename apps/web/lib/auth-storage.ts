@@ -1,5 +1,7 @@
 import type { CryptKey } from '@repo/e2ee-auth/web';
 
+import type { AuthApiResponse } from '@/lib/auth-api';
+
 const AUTH_PREFERENCES_STORAGE_KEY = 'auth-preferences';
 
 export type AuthPreferences = {
@@ -22,13 +24,17 @@ type StoredDerivedCredentials = {
 type StoredAuthPreferences = {
   backendUrl?: string;
   lastEmail?: string;
+  authSession?: AuthApiResponse;
   derivedCredentials?: StoredDerivedCredentials;
 };
 
 export interface AuthPersistenceAdapter {
+  clearAuthSession: () => void;
   clearDerivedCredentials: () => void;
+  readAuthSession: () => AuthApiResponse | null;
   readDerivedCredentials: () => PersistedDerivedCredentials | null;
   readPreferences: () => AuthPreferences;
+  writeAuthSession: (session: AuthApiResponse) => void;
   writeDerivedCredentials: (credentials: PersistedDerivedCredentials) => void;
   writePreferences: (preferences: AuthPreferences) => void;
 }
@@ -126,6 +132,17 @@ function hexToBytes(hex: string) {
 }
 
 export const localStorageAuthPersistence: AuthPersistenceAdapter = {
+  clearAuthSession() {
+    const storedPreferences = readStoredPreferences();
+
+    if (!storedPreferences?.authSession) {
+      return;
+    }
+
+    const { authSession: _authSession, ...nextPreferences } = storedPreferences;
+
+    writeStoredPreferences(nextPreferences);
+  },
   clearDerivedCredentials() {
     const storedPreferences = readStoredPreferences();
 
@@ -136,6 +153,30 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
     const { derivedCredentials: _derivedCredentials, ...nextPreferences } = storedPreferences;
 
     writeStoredPreferences(nextPreferences);
+  },
+  readAuthSession() {
+    const storedPreferences = readStoredPreferences();
+    const authSession = storedPreferences?.authSession;
+
+    if (
+      !authSession ||
+      typeof authSession.token !== 'string' ||
+      typeof authSession.refreshToken !== 'string' ||
+      !authSession.user ||
+      typeof authSession.user.id !== 'string' ||
+      typeof authSession.user.email !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      refreshToken: authSession.refreshToken,
+      token: authSession.token,
+      user: {
+        email: authSession.user.email.trim().toLowerCase(),
+        id: authSession.user.id,
+      },
+    };
   },
   readDerivedCredentials() {
     const storedPreferences = readStoredPreferences();
@@ -182,6 +223,22 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
         saltHex: credentials.saltHex.trim().toLowerCase(),
       },
       lastEmail: credentials.email.trim().toLowerCase(),
+    });
+  },
+  writeAuthSession(session) {
+    const storedPreferences = readStoredPreferences() ?? {};
+
+    writeStoredPreferences({
+      ...storedPreferences,
+      authSession: {
+        refreshToken: session.refreshToken,
+        token: session.token,
+        user: {
+          email: session.user.email.trim().toLowerCase(),
+          id: session.user.id,
+        },
+      },
+      lastEmail: session.user.email.trim().toLowerCase(),
     });
   },
   writePreferences(preferences) {

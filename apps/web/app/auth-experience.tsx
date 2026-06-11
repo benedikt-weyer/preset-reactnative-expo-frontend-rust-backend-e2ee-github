@@ -63,14 +63,26 @@ export function AuthExperience() {
   useEffect(() => {
     queueMicrotask(() => {
       const preferences = readAuthPreferences();
+      const storedSession = localStorageAuthPersistence.readAuthSession();
       const storedCredentials = localStorageAuthPersistence.readDerivedCredentials();
 
       setBackendUrl(preferences.backendUrl);
       setCryptKey(storedCredentials?.cryptKey ?? null);
+      setSession(storedSession);
       setEmail(storedCredentials?.email ?? preferences.lastEmail);
       setStoredCredentialsEmail(storedCredentials?.email ?? '');
       setStoredSaltHex(storedCredentials?.saltHex ?? null);
       setStoredPayload(readEncryptedVault());
+
+      if (storedSession && storedCredentials) {
+        void loadEncryptedNote({
+          cryptKey: storedCredentials.cryptKey,
+          fallbackMessage: 'Restored your encrypted session from local storage.',
+          token: storedSession.token,
+          trimmedBackendUrl: preferences.backendUrl,
+        });
+      }
+
       setIsHydrated(true);
     });
   }, []);
@@ -121,6 +133,7 @@ export function AuthExperience() {
         backendUrl: trimmedBackendUrl,
         lastEmail: credentials.email,
       });
+      localStorageAuthPersistence.writeAuthSession(response);
       localStorageAuthPersistence.writeDerivedCredentials({
         cryptKey: credentials.cryptKey,
         email: credentials.email,
@@ -150,6 +163,7 @@ export function AuthExperience() {
     setPassword('');
     setStoredCredentialsEmail('');
     setStoredSaltHex(null);
+    localStorageAuthPersistence.clearAuthSession();
     localStorageAuthPersistence.clearDerivedCredentials();
     setStatusMessage(
       'Signed out. The synced ciphertext remains on the backend and in local cache, and the stored crypt material was cleared.',
