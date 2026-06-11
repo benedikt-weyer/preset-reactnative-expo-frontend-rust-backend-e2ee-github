@@ -1,0 +1,16 @@
+.git
+.turbo
+node_modules
+
+android/build
+android/app/build
+
+apps/backend/target
+apps/docs/site
+apps/mobile/.expo
+apps/mobile/android/build
+apps/mobile/node_modules
+apps/web/.next
+apps/web/node_modules
+
+docs/site

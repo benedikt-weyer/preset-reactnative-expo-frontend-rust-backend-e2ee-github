@@ -1,4 +1,4 @@
-name: Release Backend
+name: Release Containers
 
 on:
   push:
@@ -10,12 +10,12 @@ permissions:
   packages: write
 
 concurrency:
-  group: release-backend-main
+  group: release-containers-main
   cancel-in-progress: false
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository_owner }}/${{ github.event.repository.name }}-backend
+  IMAGE_PREFIX: ${{ github.repository_owner }}/${{ github.event.repository.name }}
 
 jobs:
   create-tags:
@@ -182,7 +182,7 @@ jobs:
       - name: Write workflow summary
         run: |
           {
-            echo '## Backend release'
+            echo '## Container release'
             echo
             echo "Final tag: ${{ steps.version.outputs.final_tag }}"
             echo
@@ -205,6 +205,9 @@ jobs:
       max-parallel: 1
       matrix:
         release: ${{ fromJson(needs.create-tags.outputs.created_releases) }}
+        service:
+          - backend
+          - web
 
     steps:
       - name: Checkout tagged commit
@@ -222,24 +225,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build and publish backend image
+      - name: Prepare container metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrix.service }}
+          tags: |
+            type=raw,value=${{ matrix.release.tag }}
+            type=raw,value=latest,enable=${{ matrix.release.tag == needs.create-tags.outputs.final_tag }}
+
+      - name: Build and publish container image
         uses: docker/build-push-action@v6
         with:
-          context: apps/backend
-          file: apps/backend/Dockerfile
+          context: ${{ matrix.service == 'backend' && 'apps/backend' || '.' }}
+          file: ${{ matrix.service == 'backend' && 'apps/backend/Dockerfile' || 'apps/web/Dockerfile' }}
           push: true
-          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.release.tag }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ matrix.release.commit }}
-            org.opencontainers.image.version=${{ matrix.release.tag }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
 
       - name: Write publish summary
         run: |
           {
-            echo '## Published backend image'
+            echo '## Published container image'
             echo
+            echo "Service: ${{ matrix.service }}"
             echo "Tag: ${{ matrix.release.tag }}"
             echo "Commit: ${{ matrix.release.commit }}"
-            echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ matrix.release.tag }}"
+            echo "Image: ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-${{ matrix.service }}:${{ matrix.release.tag }}"
           } >> "$GITHUB_STEP_SUMMARY"

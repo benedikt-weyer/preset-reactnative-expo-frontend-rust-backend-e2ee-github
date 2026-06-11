@@ -15,6 +15,7 @@
     "build": "turbo build",
     "build:docs": "turbo -F docs build",
     "build:web": "turbo -F web build",
+    "build:web:docker": "docker build -t preset-web -f apps/web/Dockerfile .",
     "build:mobile": "turbo -F mobile build",
     "build:backend": "cd apps/backend && cargo build",
     "build:backend:docker": "docker build -t preset-backend -f apps/backend/Dockerfile apps/backend",
