@@ -33,7 +33,7 @@ async fn main() -> AppResult<()> {
 
     Migrator::up(&db, None)
         .await
-        .map_err(|_| AppError::internal("failed to run database migrations"))?;
+        .map_err(|error| AppError::internal(format!("failed to run database migrations: {error}")))?;
 
     let state = AppState { config, db };
 

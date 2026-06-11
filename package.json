@@ -17,18 +17,19 @@
     "build:web": "turbo -F web build",
     "build:web:docker": "docker build -t preset-web -f apps/web/Dockerfile .",
     "build:mobile": "turbo -F mobile build",
-    "build:backend": "cd apps/backend && cargo build",
+    "build:backend": "turbo -F backend build",
     "build:backend:docker": "docker build -t preset-backend -f apps/backend/Dockerfile apps/backend",
 
-    "check:backend": "cd apps/backend && cargo check",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:restart": "pnpm db:down && pnpm db:up",
 
     "lint": "turbo lint",
     "typecheck": "turbo typecheck",
+    "check": "turbo typecheck lint check test",
 
-    "test": "turbo test"
+    "test": "turbo test",
+    "test:web": "turbo -F web test"
   },
   "devDependencies": {
     "turbo": "^2.5.4"

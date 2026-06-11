@@ -5,16 +5,26 @@ type AuthenticatedRequest = {
   token: string;
 };
 
-type SaveTestNoteRequest = AuthenticatedRequest & {
+type NoteByIdRequest = AuthenticatedRequest & {
+  noteId: string;
+};
+
+type SaveNoteRequest = AuthenticatedRequest & {
   payload: EncryptedPayload;
 };
 
-type TestNoteResponse = EncryptedPayload & {
+type UpdateNoteRequest = SaveNoteRequest & {
+  noteId: string;
+};
+
+export type NoteResponse = EncryptedPayload & {
+  createdAt: string;
+  id: string;
   updatedAt: string;
 };
 
-export async function fetchTestNote(request: AuthenticatedRequest) {
-  const response = await fetch(buildApiUrl(request.baseUrl, '/api/notes/test-note'), {
+export async function fetchNotes(request: AuthenticatedRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/notes'), {
     headers: {
       Authorization: `Bearer ${request.token}`,
     },
@@ -22,7 +32,7 @@ export async function fetchTestNote(request: AuthenticatedRequest) {
   });
 
   const responseBody = (await response.json().catch(() => null)) as
-    | TestNoteResponse
+    | NoteResponse[]
     | { error?: string }
     | null;
 
@@ -30,15 +40,57 @@ export async function fetchTestNote(request: AuthenticatedRequest) {
     throw new Error(readErrorMessage(responseBody));
   }
 
-  if (responseBody === null) {
-    return null;
+  if (!Array.isArray(responseBody)) {
+    throw new Error('The backend returned an invalid notes payload.');
+  }
+
+  return responseBody.map(validatePayload);
+}
+
+export async function fetchNote(request: NoteByIdRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, buildNotePath(request.noteId)), {
+    headers: {
+      Authorization: `Bearer ${request.token}`,
+    },
+    method: 'GET',
+  });
+
+  const responseBody = (await response.json().catch(() => null)) as
+    | NoteResponse
+    | { error?: string }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(readErrorMessage(responseBody));
   }
 
   return validatePayload(responseBody);
 }
 
-export async function saveTestNote(request: SaveTestNoteRequest) {
-  const response = await fetch(buildApiUrl(request.baseUrl, '/api/notes/test-note'), {
+export async function createNote(request: SaveNoteRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/notes'), {
+    body: JSON.stringify(request.payload),
+    headers: {
+      Authorization: `Bearer ${request.token}`,
+      'Content-Type': 'application/json',
+    },
+    method: 'POST',
+  });
+
+  const responseBody = (await response.json().catch(() => null)) as
+    | NoteResponse
+    | { error?: string }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(readErrorMessage(responseBody));
+  }
+
+  return validatePayload(responseBody);
+}
+
+export async function updateNote(request: UpdateNoteRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, buildNotePath(request.noteId)), {
     body: JSON.stringify(request.payload),
     headers: {
       Authorization: `Bearer ${request.token}`,
@@ -48,7 +100,7 @@ export async function saveTestNote(request: SaveTestNoteRequest) {
   });
 
   const responseBody = (await response.json().catch(() => null)) as
-    | TestNoteResponse
+    | NoteResponse
     | { error?: string }
     | null;
 
@@ -59,8 +111,8 @@ export async function saveTestNote(request: SaveTestNoteRequest) {
   return validatePayload(responseBody);
 }
 
-export async function deleteTestNote(request: AuthenticatedRequest) {
-  const response = await fetch(buildApiUrl(request.baseUrl, '/api/notes/test-note'), {
+export async function deleteNote(request: NoteByIdRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, buildNotePath(request.noteId)), {
     headers: {
       Authorization: `Bearer ${request.token}`,
     },
@@ -78,37 +130,45 @@ export async function deleteTestNote(request: AuthenticatedRequest) {
 }
 
 function validatePayload(
-  responseBody: TestNoteResponse | { error?: string } | null,
-): EncryptedPayload {
+  responseBody: NoteResponse | { error?: string } | null,
+): NoteResponse {
   if (
     !responseBody ||
     typeof responseBody !== 'object' ||
+    !('id' in responseBody) ||
     !('algorithm' in responseBody) ||
+    typeof responseBody.id !== 'string' ||
     typeof responseBody.algorithm !== 'string' ||
     typeof responseBody.ciphertextHex !== 'string' ||
+    typeof responseBody.createdAt !== 'string' ||
     typeof responseBody.nonceHex !== 'string' ||
+    typeof responseBody.updatedAt !== 'string' ||
     typeof responseBody.version !== 'number'
   ) {
-    throw new Error('The backend returned an invalid encrypted note payload.');
+    throw new Error('The backend returned an invalid note payload.');
   }
 
   return {
     algorithm: responseBody.algorithm,
     ciphertextHex: responseBody.ciphertextHex,
+    createdAt: responseBody.createdAt,
+    id: responseBody.id,
     nonceHex: responseBody.nonceHex,
+    updatedAt: responseBody.updatedAt,
     version: responseBody.version,
   };
 }
 
 function readErrorMessage(
-  responseBody: TestNoteResponse | { error?: string } | boolean | null,
+  responseBody: NoteResponse | NoteResponse[] | { error?: string } | boolean | null,
 ) {
   return responseBody &&
     typeof responseBody === 'object' &&
+    !Array.isArray(responseBody) &&
     'error' in responseBody &&
     typeof responseBody.error === 'string'
     ? responseBody.error
-    : 'The backend rejected the encrypted note request.';
+    : 'The backend rejected the note request.';
 }
 
 function buildApiUrl(baseUrl: string, path: string) {
@@ -119,4 +179,14 @@ function buildApiUrl(baseUrl: string, path: string) {
   }
 
   return `${normalizedBaseUrl}${path}`;
+}
+
+function buildNotePath(noteId: string) {
+  const normalizedNoteId = noteId.trim();
+
+  if (!normalizedNoteId) {
+    throw new Error('Provide a note id before sending a note request.');
+  }
+
+  return `/api/notes/${encodeURIComponent(normalizedNoteId)}`;
 }

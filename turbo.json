@@ -17,6 +17,9 @@
     },
     "test": {
       "outputs": []
+    },
+    "check": {
+      "outputs": []
     }
   }
 }

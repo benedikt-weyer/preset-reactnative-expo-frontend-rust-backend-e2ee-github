@@ -41,6 +41,13 @@ impl AppError {
         }
     }
 
+    pub fn not_found(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            status: StatusCode::NOT_FOUND,
+        }
+    }
+
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),

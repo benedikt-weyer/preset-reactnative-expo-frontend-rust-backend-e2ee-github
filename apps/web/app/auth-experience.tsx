@@ -21,27 +21,38 @@ import {
   type AuthApiResponse,
 } from '@/lib/auth-api';
 import {
-  deleteTestNote,
-  fetchTestNote,
-  saveTestNote,
+  createNote,
+  deleteNote,
+  fetchNotes,
+  type NoteResponse,
+  updateNote,
 } from '@/lib/test-note-api';
 import {
   localStorageAuthPersistence,
   readAuthPreferences,
   writeAuthPreferences,
 } from '@/lib/auth-storage';
-import {
-  clearEncryptedVault,
-  readEncryptedVault,
-  writeEncryptedVault,
-} from '@/lib/vault-storage';
 
 type AuthMode = 'login' | 'register';
+
+type NoteDocument = {
+  content: string;
+  title: string;
+};
+
+type DecryptedNote = {
+  createdAt: string;
+  id: string;
+  payload: EncryptedPayload;
+  title: string;
+  content: string;
+  updatedAt: string;
+};
 
 const featureNotes = [
   'The typed password stays in the browser and derives two keys locally.',
   'The backend sees only the derived auth key plus the per-account salt.',
-  'The shared demo note is synced as ciphertext and decrypted only after sign-in.',
+  'Each note is stored as one encrypted title-and-content document and addressed by a UUID.',
 ];
 
 export function AuthExperience() {
@@ -49,12 +60,14 @@ export function AuthExperience() {
   const [backendUrl, setBackendUrl] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [draft, setDraft] = useState('');
+  const [noteTitle, setNoteTitle] = useState('');
+  const [noteContent, setNoteContent] = useState('');
+  const [notes, setNotes] = useState<DecryptedNote[]>([]);
+  const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [session, setSession] = useState<AuthApiResponse | null>(null);
   const [cryptKey, setCryptKey] = useState<CryptKey | null>(null);
   const [storedCredentialsEmail, setStoredCredentialsEmail] = useState('');
   const [storedSaltHex, setStoredSaltHex] = useState<string | null>(null);
-  const [storedPayload, setStoredPayload] = useState<EncryptedPayload | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [isHydrated, setIsHydrated] = useState(false);
@@ -72,20 +85,29 @@ export function AuthExperience() {
       setEmail(storedCredentials?.email ?? preferences.lastEmail);
       setStoredCredentialsEmail(storedCredentials?.email ?? '');
       setStoredSaltHex(storedCredentials?.saltHex ?? null);
-      setStoredPayload(readEncryptedVault());
-
-      if (storedSession && storedCredentials) {
-        void loadEncryptedNote({
-          cryptKey: storedCredentials.cryptKey,
-          fallbackMessage: 'Restored your encrypted session from local storage.',
-          token: storedSession.token,
-          trimmedBackendUrl: preferences.backendUrl,
-        });
-      }
 
       setIsHydrated(true);
     });
   }, []);
+
+  useEffect(() => {
+    if (!isHydrated) {
+      return;
+    }
+
+    if (!cryptKey || !session) {
+      setNotes([]);
+      applySelectedNote(null);
+      return;
+    }
+
+    void loadNotes({
+      cryptKey,
+      emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
+      token: session.token,
+      trimmedBackendUrl: backendUrl.trim(),
+    });
+  }, [backendUrl, cryptKey, isHydrated, session]);
 
   async function handleSubmit() {
     setErrorMessage(null);
@@ -139,12 +161,12 @@ export function AuthExperience() {
         email: credentials.email,
         saltHex,
       });
-      await loadEncryptedNote({
+      await loadNotes({
         cryptKey: credentials.cryptKey,
-        fallbackMessage:
+        emptyMessage:
           mode === 'register'
-            ? 'Account created. Save a note to push ciphertext to the backend.'
-            : 'Logged in. Save a note to push ciphertext to the backend.',
+            ? 'Account created. Create a note to push ciphertext to the backend.'
+            : 'Logged in. Create a note to push ciphertext to the backend.',
         token: response.token,
         trimmedBackendUrl,
       });
@@ -163,71 +185,72 @@ export function AuthExperience() {
     setPassword('');
     setStoredCredentialsEmail('');
     setStoredSaltHex(null);
+    setNotes([]);
+    applySelectedNote(null);
     localStorageAuthPersistence.clearAuthSession();
     localStorageAuthPersistence.clearDerivedCredentials();
     setStatusMessage(
-      'Signed out. The synced ciphertext remains on the backend and in local cache, and the stored crypt material was cleared.',
+      'Signed out. Synced notes remain on the backend, and the stored crypt material was cleared.',
     );
   }
 
-  async function loadEncryptedNote({
+  async function loadNotes({
     cryptKey,
-    fallbackMessage,
+    emptyMessage,
     token,
     trimmedBackendUrl,
   }: {
     cryptKey: CryptKey;
-    fallbackMessage: string;
+    emptyMessage: string;
     token: string;
     trimmedBackendUrl: string;
   }) {
-    const localPayload = readEncryptedVault();
-
     try {
-      const remotePayload = await fetchTestNote({
+      const remoteNotes = await fetchNotes({
         baseUrl: trimmedBackendUrl,
         token,
       });
+      const decryptedNotes = sortNotes(
+        remoteNotes.map((note) => decryptNoteRecord(note, cryptKey)),
+      );
 
-      if (remotePayload) {
-        writeEncryptedVault(remotePayload);
-        setStoredPayload(remotePayload);
-        setDraft(decryptString(remotePayload, cryptKey));
-        setStatusMessage('Encrypted note loaded from the backend and decrypted locally.');
-        return;
-      }
+      setNotes(decryptedNotes);
 
-      if (localPayload) {
-        setStoredPayload(localPayload);
-        setDraft(decryptString(localPayload, cryptKey));
-        setStatusMessage('Loaded local encrypted note. Save it to sync ciphertext to the backend.');
-        return;
-      }
+      const nextSelectedNote =
+        decryptedNotes.find((note) => note.id === selectedNoteId) ?? decryptedNotes[0] ?? null;
 
-      setDraft('');
-      setStoredPayload(null);
-      setStatusMessage(fallbackMessage);
-    } catch (error) {
-      if (localPayload) {
-        setStoredPayload(localPayload);
-
-        try {
-          setDraft(decryptString(localPayload, cryptKey));
-          setStatusMessage(
-            'Backend note unavailable. Loaded the local encrypted cache instead.',
-          );
-          return;
-        } catch {
-          // Fall through to the remote error message.
-        }
-      }
-
-      setDraft('');
-      setStoredPayload(null);
+      applySelectedNote(nextSelectedNote);
       setStatusMessage(
-        error instanceof Error ? error.message : 'Unable to load the synced encrypted note.',
+        nextSelectedNote
+          ? `Loaded ${decryptedNotes.length} encrypted note${decryptedNotes.length === 1 ? '' : 's'} from the backend.`
+          : emptyMessage,
+      );
+    } catch (error) {
+      setNotes([]);
+      applySelectedNote(null);
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to load encrypted notes.',
       );
     }
+  }
+
+  function applySelectedNote(note: DecryptedNote | null) {
+    setSelectedNoteId(note?.id ?? null);
+    setNoteTitle(note?.title ?? '');
+    setNoteContent(note?.content ?? '');
+  }
+
+  function handleCreateNote() {
+    setErrorMessage(null);
+    applySelectedNote(null);
+    setStatusMessage('Creating a new encrypted note draft.');
+  }
+
+  function handleSelectNote(noteId: string) {
+    const nextNote = notes.find((note) => note.id === noteId) ?? null;
+
+    applySelectedNote(nextNote);
+    setStatusMessage(nextNote ? `Selected "${nextNote.title || 'Untitled note'}".` : '');
   }
 
   async function handleSaveNote() {
@@ -238,42 +261,70 @@ export function AuthExperience() {
     setErrorMessage(null);
 
     try {
-      const encryptedPayload = encryptString(draft, cryptKey);
-      const savedPayload = await saveTestNote({
-        baseUrl: backendUrl,
-        payload: encryptedPayload,
-        token: session.token,
-      });
+      const encryptedPayload = encryptString(
+        serializeNoteDocument({
+          content: noteContent,
+          title: noteTitle,
+        }),
+        cryptKey,
+      );
+      const savedNote = selectedNoteId
+        ? await updateNote({
+            baseUrl: backendUrl,
+            noteId: selectedNoteId,
+            payload: encryptedPayload,
+            token: session.token,
+          })
+        : await createNote({
+            baseUrl: backendUrl,
+            payload: encryptedPayload,
+            token: session.token,
+          });
 
-      writeEncryptedVault(savedPayload);
-      setStoredPayload(savedPayload);
-      setStatusMessage('Encrypted note saved to the backend as ciphertext.');
+      const decryptedNote = decryptNoteRecord(savedNote, cryptKey);
+      const nextNotes = sortNotes([
+        decryptedNote,
+        ...notes.filter((note) => note.id !== decryptedNote.id),
+      ]);
+
+      setNotes(nextNotes);
+      applySelectedNote(decryptedNote);
+      setStatusMessage(
+        selectedNoteId
+          ? `Updated "${decryptedNote.title || 'Untitled note'}".`
+          : `Created "${decryptedNote.title || 'Untitled note'}".`,
+      );
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : 'Unable to save the synced encrypted note.',
+        error instanceof Error ? error.message : 'Unable to save the encrypted note.',
       );
     }
   }
 
   async function handleClearNote() {
-    if (!session) {
+    if (!session || !selectedNoteId) {
+      applySelectedNote(null);
+      setStatusMessage('Cleared the local note draft.');
       return;
     }
 
     setErrorMessage(null);
 
     try {
-      await deleteTestNote({
+      await deleteNote({
         baseUrl: backendUrl,
+        noteId: selectedNoteId,
         token: session.token,
       });
-      clearEncryptedVault();
-      setDraft('');
-      setStoredPayload(null);
-      setStatusMessage('Encrypted note cleared from the backend and local cache.');
+      const deletedNote = notes.find((note) => note.id === selectedNoteId) ?? null;
+      const remainingNotes = notes.filter((note) => note.id !== selectedNoteId);
+
+      setNotes(remainingNotes);
+      applySelectedNote(remainingNotes[0] ?? null);
+      setStatusMessage(`Deleted "${deletedNote?.title || 'Untitled note'}".`);
     } catch (error) {
       setErrorMessage(
-        error instanceof Error ? error.message : 'Unable to clear the synced encrypted note.',
+        error instanceof Error ? error.message : 'Unable to delete the encrypted note.',
       );
     }
   }
@@ -340,40 +391,107 @@ export function AuthExperience() {
                 <div className="flex items-center gap-3 text-foreground">
                   <UserRound className="size-5 text-primary" />
                   <p className="text-sm uppercase tracking-[0.22em] text-muted-foreground">
-                    Local vault
+                    Notes vault
                   </p>
                 </div>
                 <p className="text-sm leading-6 text-foreground/75">
-                  Save a note to verify the E2EE path. The backend stores only ciphertext,
-                  and only the current password-derived crypt key can decrypt it.
+                  Create, update, and delete encrypted notes. The backend stores only ciphertext,
+                  and only the current password-derived crypt key can decrypt the note document.
                 </p>
-                <textarea
-                  className="min-h-44 rounded-[1.5rem] border border-border bg-white px-4 py-4 text-base text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
-                  onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Write something that should stay encrypted between web and mobile"
-                  value={draft}
-                />
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <Button onClick={handleSaveNote} size="lg">
-                    <LockKeyhole />
-                    Save encrypted note
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                    Notes ({notes.length})
+                  </p>
+                  <Button onClick={handleCreateNote} size="sm" variant="outline">
+                    New note
                   </Button>
-                  <Button onClick={handleClearNote} size="lg" variant="outline">
-                    Clear
-                  </Button>
+                </div>
+                <div className="overflow-x-auto rounded-[1.2rem] border border-border/60 bg-white">
+                  {notes.length === 0 ? (
+                    <p className="px-4 py-5 text-sm text-foreground/60">
+                      No encrypted notes yet.
+                    </p>
+                  ) : (
+                    <table className="min-w-full border-collapse text-left text-sm">
+                      <thead className="bg-muted/50 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        <tr>
+                          <th className="px-4 py-3 font-semibold">Title</th>
+                          <th className="px-4 py-3 font-semibold">Preview</th>
+                          <th className="px-4 py-3 font-semibold">Updated</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {notes.map((note) => {
+                          const isActive = note.id === selectedNoteId;
+
+                          return (
+                            <tr
+                              className={`cursor-pointer border-t border-border/50 transition ${
+                                isActive
+                                  ? 'bg-primary/10'
+                                  : 'hover:bg-primary/5'
+                              }`}
+                              key={note.id}
+                              onClick={() => handleSelectNote(note.id)}
+                            >
+                              <td className="max-w-[12rem] truncate px-4 py-3 font-semibold text-foreground">
+                                {note.title || 'Untitled note'}
+                              </td>
+                              <td className="max-w-[18rem] truncate px-4 py-3 text-foreground/70">
+                                {note.content || 'No content yet'}
+                              </td>
+                              <td className="whitespace-nowrap px-4 py-3 text-foreground/60">
+                                {formatTimestamp(note.updatedAt)}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+                <div className="grid gap-3">
+                  <LabeledInput
+                    autoComplete="off"
+                    label="Title"
+                    onChange={setNoteTitle}
+                    placeholder="Untitled note"
+                    type="text"
+                    value={noteTitle}
+                  />
+                  <label className="grid gap-2">
+                    <span className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                      Content
+                    </span>
+                    <textarea
+                      className="min-h-44 rounded-[1.5rem] border border-border bg-white px-4 py-4 text-base text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
+                      onChange={(event) => setNoteContent(event.target.value)}
+                      placeholder="Write something that should stay encrypted between web and mobile"
+                      value={noteContent}
+                    />
+                  </label>
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Button onClick={handleSaveNote} size="lg">
+                      <LockKeyhole />
+                      {selectedNoteId ? 'Update encrypted note' : 'Create encrypted note'}
+                    </Button>
+                    <Button onClick={handleClearNote} size="lg" variant="outline">
+                      {selectedNoteId ? 'Delete note' : 'Clear draft'}
+                    </Button>
+                  </div>
                 </div>
               </div>
 
               <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-muted/45 p-5 text-sm leading-6 text-foreground/75">
                 <p>
                   {statusMessage ||
-                    'Nothing encrypted yet. Save a note to exercise the synced E2EE flow.'}
+                    'Nothing encrypted yet. Create a note to exercise the synced E2EE flow.'}
                 </p>
-                {storedPayload ? (
+                {selectedNoteId ? (
                   <p>
-                    Ciphertext preview:{' '}
+                    Selected note id:{' '}
                     <span className="font-mono text-xs">
-                      {storedPayload.ciphertextHex.slice(0, 64)}...
+                      {selectedNoteId}
                     </span>
                   </p>
                 ) : null}
@@ -455,7 +573,7 @@ type LabeledInputProps = {
   label: string;
   onChange: (value: string) => void;
   placeholder: string;
-  type: 'email' | 'password';
+  type: 'email' | 'password' | 'text';
   value: string;
 };
 
@@ -482,4 +600,55 @@ function LabeledInput({
       />
     </label>
   );
+}
+
+function serializeNoteDocument(note: NoteDocument) {
+  return JSON.stringify({
+    content: note.content,
+    title: note.title,
+  });
+}
+
+function decryptNoteRecord(note: NoteResponse, cryptKey: CryptKey): DecryptedNote {
+  const decryptedDocument = deserializeNoteDocument(decryptString(note, cryptKey));
+
+  return {
+    content: decryptedDocument.content,
+    createdAt: note.createdAt,
+    id: note.id,
+    payload: note,
+    title: decryptedDocument.title,
+    updatedAt: note.updatedAt,
+  };
+}
+
+function deserializeNoteDocument(value: string): NoteDocument {
+  try {
+    const parsed = JSON.parse(value) as Partial<NoteDocument>;
+
+    if (typeof parsed?.title === 'string' && typeof parsed?.content === 'string') {
+      return {
+        content: parsed.content,
+        title: parsed.title,
+      };
+    }
+  } catch {
+    // Fall back to treating legacy values as content-only text.
+  }
+
+  return {
+    content: value,
+    title: '',
+  };
+}
+
+function sortNotes(notes: DecryptedNote[]) {
+  return [...notes].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function formatTimestamp(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value));
 }

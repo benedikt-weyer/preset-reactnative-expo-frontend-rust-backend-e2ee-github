@@ -1,32 +1,31 @@
 use axum::{
-    extract::State,
+    extract::{Path, State},
     routing::get,
     Json, Router,
 };
 use chrono::Utc;
-use sea_orm::{ActiveModelTrait, ColumnTrait, EntityTrait, ModelTrait, QueryFilter, Set};
+use sea_orm::{
+    ActiveModelTrait, ColumnTrait, EntityTrait, ModelTrait, QueryFilter, QueryOrder, Set,
+};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    db::entity::encrypted_note,
+    db::entity::note,
     error::{AppError, AppResult},
     features::auth::AuthenticatedUser,
 };
 
 pub fn router() -> Router<AppState> {
-    Router::new().route(
-        "/test-note",
-        get(get_test_note)
-            .put(upsert_test_note)
-            .delete(delete_test_note),
-    )
+    Router::new()
+        .route("/", get(list_notes).post(create_note))
+        .route("/{note_id}", get(get_note).put(update_note).delete(delete_note))
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UpsertTestNoteRequest {
+pub struct SaveNoteRequest {
     algorithm: String,
     ciphertext_hex: String,
     nonce_hex: String,
@@ -35,102 +34,119 @@ pub struct UpsertTestNoteRequest {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TestNoteResponse {
+pub struct NoteResponse {
+    id: Uuid,
     algorithm: String,
     ciphertext_hex: String,
     nonce_hex: String,
+    created_at: String,
     updated_at: String,
     version: i32,
 }
 
-pub async fn get_test_note(
+pub async fn list_notes(
     State(state): State<AppState>,
     authenticated_user: AuthenticatedUser,
-) -> AppResult<Json<Option<TestNoteResponse>>> {
-    let encrypted_note = encrypted_note::Entity::find()
-        .filter(encrypted_note::Column::UserId.eq(authenticated_user.user_id))
-        .one(&state.db)
+) -> AppResult<Json<Vec<NoteResponse>>> {
+    let notes = note::Entity::find()
+        .filter(note::Column::UserId.eq(authenticated_user.user_id))
+        .order_by_desc(note::Column::UpdatedAt)
+        .all(&state.db)
         .await
-        .map_err(|_| AppError::internal("failed to query the encrypted note"))?;
+        .map_err(|_| AppError::internal("failed to query notes"))?;
 
-    Ok(Json(encrypted_note.map(map_note_response)))
+    Ok(Json(notes.into_iter().map(map_note_response).collect()))
 }
 
-pub async fn upsert_test_note(
+pub async fn get_note(
     State(state): State<AppState>,
+    Path(note_id): Path<Uuid>,
     authenticated_user: AuthenticatedUser,
-    Json(payload): Json<UpsertTestNoteRequest>,
-) -> AppResult<Json<TestNoteResponse>> {
-    validate_payload(&payload)?;
-
-    let existing_note = encrypted_note::Entity::find()
-        .filter(encrypted_note::Column::UserId.eq(authenticated_user.user_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| AppError::internal("failed to query the encrypted note"))?;
-
-    let now = Utc::now().fixed_offset();
-    let saved_note = match existing_note {
-        Some(existing_note) => {
-            let mut active_model: encrypted_note::ActiveModel = existing_note.into();
-            active_model.algorithm = Set(payload.algorithm.trim().to_owned());
-            active_model.ciphertext_hex = Set(payload.ciphertext_hex.trim().to_owned());
-            active_model.nonce_hex = Set(payload.nonce_hex.trim().to_owned());
-            active_model.version = Set(payload.version);
-            active_model.updated_at = Set(now);
-            active_model
-                .update(&state.db)
-                .await
-                .map_err(|_| AppError::internal("failed to update the encrypted note"))?
-        }
-        None => encrypted_note::ActiveModel {
-            id: Set(Uuid::new_v4()),
-            user_id: Set(authenticated_user.user_id),
-            algorithm: Set(payload.algorithm.trim().to_owned()),
-            ciphertext_hex: Set(payload.ciphertext_hex.trim().to_owned()),
-            nonce_hex: Set(payload.nonce_hex.trim().to_owned()),
-            version: Set(payload.version),
-            created_at: Set(now),
-            updated_at: Set(now),
-        }
-        .insert(&state.db)
-        .await
-        .map_err(|_| AppError::internal("failed to create the encrypted note"))?,
-    };
+) -> AppResult<Json<NoteResponse>> {
+    let saved_note = find_note_by_id(&state, authenticated_user.user_id, note_id).await?;
 
     Ok(Json(map_note_response(saved_note)))
 }
 
-pub async fn delete_test_note(
+pub async fn create_note(
     State(state): State<AppState>,
     authenticated_user: AuthenticatedUser,
-) -> AppResult<Json<bool>> {
-    if let Some(existing_note) = encrypted_note::Entity::find()
-        .filter(encrypted_note::Column::UserId.eq(authenticated_user.user_id))
-        .one(&state.db)
-        .await
-        .map_err(|_| AppError::internal("failed to query the encrypted note"))?
-    {
-        existing_note
-            .delete(&state.db)
-            .await
-            .map_err(|_| AppError::internal("failed to delete the encrypted note"))?;
+    Json(payload): Json<SaveNoteRequest>,
+) -> AppResult<Json<NoteResponse>> {
+    validate_payload(&payload)?;
+
+    let now = Utc::now().fixed_offset();
+    let saved_note = note::ActiveModel {
+        id: Set(Uuid::now_v7()),
+        user_id: Set(authenticated_user.user_id),
+        algorithm: Set(payload.algorithm.trim().to_owned()),
+        ciphertext_hex: Set(payload.ciphertext_hex.trim().to_owned()),
+        nonce_hex: Set(payload.nonce_hex.trim().to_owned()),
+        version: Set(payload.version),
+        created_at: Set(now),
+        updated_at: Set(now),
     }
+    .insert(&state.db)
+    .await
+    .map_err(|_| AppError::internal("failed to create the note"))?;
+
+    Ok(Json(map_note_response(saved_note)))
+}
+
+pub async fn update_note(
+    State(state): State<AppState>,
+    Path(note_id): Path<Uuid>,
+    authenticated_user: AuthenticatedUser,
+    Json(payload): Json<SaveNoteRequest>,
+) -> AppResult<Json<NoteResponse>> {
+    validate_payload(&payload)?;
+
+    let existing_note = find_note_by_id(&state, authenticated_user.user_id, note_id).await?;
+
+    let now = Utc::now().fixed_offset();
+    let mut active_model: note::ActiveModel = existing_note.into();
+    active_model.algorithm = Set(payload.algorithm.trim().to_owned());
+    active_model.ciphertext_hex = Set(payload.ciphertext_hex.trim().to_owned());
+    active_model.nonce_hex = Set(payload.nonce_hex.trim().to_owned());
+    active_model.version = Set(payload.version);
+    active_model.updated_at = Set(now);
+
+    let saved_note = active_model
+        .update(&state.db)
+        .await
+        .map_err(|_| AppError::internal("failed to update the note"))?;
+
+    Ok(Json(map_note_response(saved_note)))
+}
+
+pub async fn delete_note(
+    State(state): State<AppState>,
+    Path(note_id): Path<Uuid>,
+    authenticated_user: AuthenticatedUser,
+) -> AppResult<Json<bool>> {
+    let existing_note = find_note_by_id(&state, authenticated_user.user_id, note_id).await?;
+
+    existing_note
+        .delete(&state.db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the note"))?;
 
     Ok(Json(true))
 }
 
-fn map_note_response(note: encrypted_note::Model) -> TestNoteResponse {
-    TestNoteResponse {
+fn map_note_response(note: note::Model) -> NoteResponse {
+    NoteResponse {
+        id: note.id,
         algorithm: note.algorithm,
         ciphertext_hex: note.ciphertext_hex,
         nonce_hex: note.nonce_hex,
+        created_at: note.created_at.to_rfc3339(),
         updated_at: note.updated_at.to_rfc3339(),
         version: note.version,
     }
 }
 
-fn validate_payload(payload: &UpsertTestNoteRequest) -> AppResult<()> {
+fn validate_payload(payload: &SaveNoteRequest) -> AppResult<()> {
     if payload.algorithm.trim() != "xsalsa20-poly1305" {
         return Err(AppError::validation(
             "algorithm must be xsalsa20-poly1305",
@@ -158,4 +174,18 @@ fn normalize_hex_field(value: &str, field_name: &str) -> AppResult<()> {
         .map_err(|_| AppError::validation(format!("{field_name} must be valid hex")))?;
 
     Ok(())
+}
+
+async fn find_note_by_id(
+    state: &AppState,
+    user_id: Uuid,
+    note_id: Uuid,
+) -> AppResult<note::Model> {
+    note::Entity::find()
+        .filter(note::Column::Id.eq(note_id))
+        .filter(note::Column::UserId.eq(user_id))
+        .one(&state.db)
+        .await
+        .map_err(|_| AppError::internal("failed to query the note"))?
+        .ok_or_else(|| AppError::not_found("note not found"))
 }
