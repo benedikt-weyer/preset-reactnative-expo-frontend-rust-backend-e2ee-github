@@ -17,7 +17,7 @@ backend using Axum, SeaORM, and Postgres.
 
 ```bash
 pnpm install
-cp apps/backend/.env.example apps/backend/.env
+pnpm setupenv
 pnpm db:up
 pnpm dev:backend
 pnpm dev
@@ -29,6 +29,9 @@ For physical device testing, set the backend URL inside the mobile auth screen o
 settings screen to a LAN address such as `http://192.168.1.20:4000`.
 
 ## Backend env
+
+`pnpm setupenv` creates any missing `.env` files from nearby `.env.example`
+templates and automatically generates a local `JWT_SECRET` for the backend.
 
 `apps/backend/.env.example` defaults to the Postgres instance from
 `docker-compose.yml`.

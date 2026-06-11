@@ -1,0 +1,141 @@
+import { randomBytes } from 'node:crypto';
+import { existsSync } from 'node:fs';
+import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const PLACEHOLDER_SECRETS = new Map([
+  ['JWT_SECRET', 'change-me-for-non-local-use'],
+]);
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const repoRoot = path.resolve(__dirname, '..');
+
+async function findEnvExamples(rootDir) {
+  const results = [];
+  const ignoredDirectories = new Set([
+    '.git',
+    '.next',
+    '.turbo',
+    'build',
+    'dist',
+    'node_modules',
+    'site',
+    'target',
+  ]);
+
+  async function walk(currentDir) {
+    const entries = await readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        if (ignoredDirectories.has(entry.name)) {
+          continue;
+        }
+
+        await walk(path.join(currentDir, entry.name));
+        continue;
+      }
+
+      if (entry.isFile() && entry.name === '.env.example') {
+        results.push(path.join(currentDir, entry.name));
+      }
+    }
+  }
+
+  await walk(rootDir);
+  return results;
+}
+
+function parseEnv(content) {
+  const values = new Map();
+
+  for (const line of content.split(/\r?\n/)) {
+    if (!line || line.trimStart().startsWith('#')) {
+      continue;
+    }
+
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const key = line.slice(0, separatorIndex).trim();
+    const value = line.slice(separatorIndex + 1);
+    values.set(key, value);
+  }
+
+  return values;
+}
+
+function generateSecret() {
+  return randomBytes(48).toString('base64url');
+}
+
+function applyGeneratedSecrets(content) {
+  const envValues = parseEnv(content);
+  let nextContent = content;
+  let changed = false;
+
+  for (const [key, placeholder] of PLACEHOLDER_SECRETS) {
+    const currentValue = envValues.get(key);
+    if (!currentValue || currentValue !== placeholder) {
+      continue;
+    }
+
+    const generatedValue = generateSecret();
+    const pattern = new RegExp(`^${key}=${escapeRegExp(placeholder)}$`, 'm');
+    nextContent = nextContent.replace(pattern, `${key}=${generatedValue}`);
+    changed = true;
+  }
+
+  return { content: nextContent, changed };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function ensureEnvFile(examplePath) {
+  const envPath = path.join(path.dirname(examplePath), '.env');
+
+  if (existsSync(envPath)) {
+    return { envPath, action: 'skipped' };
+  }
+
+  const template = await readFile(examplePath, 'utf8');
+  const { content } = applyGeneratedSecrets(template);
+  await mkdir(path.dirname(envPath), { recursive: true });
+  await writeFile(envPath, content, 'utf8');
+
+  return { envPath, action: 'created' };
+}
+
+async function main() {
+  const examplePaths = await findEnvExamples(repoRoot);
+
+  if (examplePaths.length === 0) {
+    console.log('No .env.example files found.');
+    return;
+  }
+
+  const results = [];
+  for (const examplePath of examplePaths.sort()) {
+    results.push(await ensureEnvFile(examplePath));
+  }
+
+  for (const result of results) {
+    const relativePath = path.relative(repoRoot, result.envPath);
+    if (result.action === 'created') {
+      console.log(`created ${relativePath}`);
+    } else {
+      console.log(`kept existing ${relativePath}`);
+    }
+  }
+}
+
+main().catch((error) => {
+  console.error(error instanceof Error ? error.message : error);
+  process.exitCode = 1;
+});

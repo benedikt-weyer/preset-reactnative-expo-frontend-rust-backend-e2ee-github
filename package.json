@@ -11,6 +11,7 @@
     "dev:backend": "cd apps/backend && cargo run",
     "dev:docs": "turbo -F docs dev",
     "dev:mobile": "turbo -F mobile dev --ui=tui",
+    "setupenv": "node ./scripts/setupenv.mjs",
     "typecheck": "turbo typecheck"
   },
   "devDependencies": {
