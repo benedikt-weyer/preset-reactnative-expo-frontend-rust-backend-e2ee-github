@@ -90,7 +90,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       throw new Error('Enter the backend URL before continuing.');
     }
 
-    const credentials = deriveCredentials(normalizedEmail, password);
+    const credentials = await deriveCredentials(normalizedEmail, password);
     const response =
       mode === 'login'
         ? await loginRequest({

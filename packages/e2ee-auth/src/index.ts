@@ -1,13 +1,22 @@
-import { pbkdf2 } from '@noble/hashes/pbkdf2';
 import { sha512 } from '@noble/hashes/sha2';
 import { bytesToHex, concatBytes, hexToBytes, randomBytes } from '@noble/hashes/utils';
+import {
+  crypto_pwhash,
+  crypto_pwhash_ALG_ARGON2ID13,
+  crypto_pwhash_MEMLIMIT_INTERACTIVE,
+  crypto_pwhash_OPSLIMIT_INTERACTIVE,
+  crypto_pwhash_SALTBYTES,
+  loadSumoVersion,
+  ready,
+} from 'react-native-libsodium';
 import nacl from 'tweetnacl';
 
 const AUTH_CONTEXT_PREFIX = utf8('auth:');
 const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
 const SALT_CONTEXT_PREFIX = utf8('e2ee-auth:');
-const KDF_ITERATIONS = 210_000;
 const CRYPT_KEY_LENGTH = 64;
+
+loadSumoVersion();
 
 export type CryptKey = Uint8Array;
 
@@ -28,7 +37,10 @@ export function normalizeEmail(email: string) {
   return email.trim().toLowerCase();
 }
 
-export function deriveCredentials(email: string, password: string): DerivedCredentials {
+export async function deriveCredentials(
+  email: string,
+  password: string,
+): Promise<DerivedCredentials> {
   const normalizedEmail = normalizeEmail(email);
   const trimmedPassword = password.trim();
 
@@ -40,11 +52,15 @@ export function deriveCredentials(email: string, password: string): DerivedCrede
     throw new Error('Enter a password.');
   }
 
-  const cryptKey = pbkdf2(
-    sha512,
+  await ready;
+
+  const cryptKey = crypto_pwhash(
+    CRYPT_KEY_LENGTH,
     utf8(password),
-    concatBytes(SALT_CONTEXT_PREFIX, utf8(normalizedEmail)),
-    { c: KDF_ITERATIONS, dkLen: CRYPT_KEY_LENGTH },
+    derivePasswordSalt(normalizedEmail),
+    crypto_pwhash_OPSLIMIT_INTERACTIVE,
+    crypto_pwhash_MEMLIMIT_INTERACTIVE,
+    crypto_pwhash_ALG_ARGON2ID13,
   );
 
   return {
@@ -84,6 +100,13 @@ function deriveEncryptionKey(cryptKey: CryptKey) {
   return sha512(concatBytes(ENCRYPTION_CONTEXT_PREFIX, cryptKey)).slice(
     0,
     nacl.secretbox.keyLength,
+  );
+}
+
+function derivePasswordSalt(email: string) {
+  return sha512(concatBytes(SALT_CONTEXT_PREFIX, utf8(email))).slice(
+    0,
+    crypto_pwhash_SALTBYTES,
   );
 }
 

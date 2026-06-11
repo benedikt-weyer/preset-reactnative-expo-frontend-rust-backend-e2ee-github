@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
+    "react-native-libsodium": "^1.7.0",
     "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
