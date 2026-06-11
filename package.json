@@ -3,8 +3,9 @@
   "private": true,
   "packageManager": "pnpm@10.33.4",
   "scripts": {
-    "dev": "turbo dev --ui=tui",
-    "dev:backend": "cd apps/backend && cargo run",
+    "dev": "pnpm db:restart && turbo dev --ui=tui",
+    "devstop": "pnpm db:down",
+    "dev:backend": "turbo -F backend dev --ui=tui",
     "dev:docs": "turbo -F docs dev",
     "dev:mobile": "turbo -F mobile dev --ui=tui",
 
@@ -17,7 +18,9 @@
     "build:backend:docker": "docker build -t preset-backend -f apps/backend/Dockerfile apps/backend",
 
     "check:backend": "cd apps/backend && cargo check",
-    "db:up": "docker compose up -d postgres",
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:restart": "pnpm db:down && pnpm db:up",
 
     "lint": "turbo lint",
     "typecheck": "turbo typecheck"
