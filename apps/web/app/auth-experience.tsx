@@ -25,7 +25,11 @@ import {
   fetchTestNote,
   saveTestNote,
 } from '@/lib/test-note-api';
-import { readAuthPreferences, writeAuthPreferences } from '@/lib/auth-storage';
+import {
+  localStorageAuthPersistence,
+  readAuthPreferences,
+  writeAuthPreferences,
+} from '@/lib/auth-storage';
 import {
   clearEncryptedVault,
   readEncryptedVault,
@@ -48,6 +52,8 @@ export function AuthExperience() {
   const [draft, setDraft] = useState('');
   const [session, setSession] = useState<AuthApiResponse | null>(null);
   const [cryptKey, setCryptKey] = useState<CryptKey | null>(null);
+  const [storedCredentialsEmail, setStoredCredentialsEmail] = useState('');
+  const [storedSaltHex, setStoredSaltHex] = useState<string | null>(null);
   const [storedPayload, setStoredPayload] = useState<EncryptedPayload | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
@@ -57,9 +63,13 @@ export function AuthExperience() {
   useEffect(() => {
     queueMicrotask(() => {
       const preferences = readAuthPreferences();
+      const storedCredentials = localStorageAuthPersistence.readDerivedCredentials();
 
       setBackendUrl(preferences.backendUrl);
-      setEmail(preferences.lastEmail);
+      setCryptKey(storedCredentials?.cryptKey ?? null);
+      setEmail(storedCredentials?.email ?? preferences.lastEmail);
+      setStoredCredentialsEmail(storedCredentials?.email ?? '');
+      setStoredSaltHex(storedCredentials?.saltHex ?? null);
       setStoredPayload(readEncryptedVault());
       setIsHydrated(true);
     });
@@ -72,13 +82,20 @@ export function AuthExperience() {
     try {
       const trimmedBackendUrl = backendUrl.trim();
       const normalizedEmail = normalizeEmail(email);
-      const saltHex =
-        mode === 'login'
-          ? await fetchPasswordSalt({
-              baseUrl: trimmedBackendUrl,
-              email: normalizedEmail,
-            })
-          : await createPasswordSalt();
+      let saltHex: string;
+
+      if (mode === 'login') {
+        saltHex =
+          storedSaltHex && storedCredentialsEmail === normalizedEmail
+            ? storedSaltHex
+            : await fetchPasswordSalt({
+                baseUrl: trimmedBackendUrl,
+                email: normalizedEmail,
+              });
+      } else {
+        saltHex = await createPasswordSalt();
+      }
+
       const credentials = await deriveCredentials(normalizedEmail, password, saltHex);
       const response =
         mode === 'login'
@@ -96,10 +113,18 @@ export function AuthExperience() {
 
       setSession(response);
       setCryptKey(credentials.cryptKey);
+      setEmail(credentials.email);
       setPassword('');
+      setStoredCredentialsEmail(credentials.email);
+      setStoredSaltHex(saltHex);
       writeAuthPreferences({
         backendUrl: trimmedBackendUrl,
         lastEmail: credentials.email,
+      });
+      localStorageAuthPersistence.writeDerivedCredentials({
+        cryptKey: credentials.cryptKey,
+        email: credentials.email,
+        saltHex,
       });
       await loadEncryptedNote({
         cryptKey: credentials.cryptKey,
@@ -123,7 +148,12 @@ export function AuthExperience() {
     setSession(null);
     setCryptKey(null);
     setPassword('');
-    setStatusMessage('Signed out. The synced ciphertext remains on the backend and in local cache.');
+    setStoredCredentialsEmail('');
+    setStoredSaltHex(null);
+    localStorageAuthPersistence.clearDerivedCredentials();
+    setStatusMessage(
+      'Signed out. The synced ciphertext remains on the backend and in local cache, and the stored crypt material was cleared.',
+    );
   }
 
   async function loadEncryptedNote({
@@ -290,7 +320,52 @@ export function AuthExperience() {
             ) : null}
           </div>
 
-          {!session ? (
+          {session ? (
+            <div className="grid gap-5">
+              <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-background/80 p-5">
+                <div className="flex items-center gap-3 text-foreground">
+                  <UserRound className="size-5 text-primary" />
+                  <p className="text-sm uppercase tracking-[0.22em] text-muted-foreground">
+                    Local vault
+                  </p>
+                </div>
+                <p className="text-sm leading-6 text-foreground/75">
+                  Save a note to verify the E2EE path. The backend stores only ciphertext,
+                  and only the current password-derived crypt key can decrypt it.
+                </p>
+                <textarea
+                  className="min-h-44 rounded-[1.5rem] border border-border bg-white px-4 py-4 text-base text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
+                  onChange={(event) => setDraft(event.target.value)}
+                  placeholder="Write something that should stay encrypted between web and mobile"
+                  value={draft}
+                />
+                <div className="flex flex-col gap-3 sm:flex-row">
+                  <Button onClick={handleSaveNote} size="lg">
+                    <LockKeyhole />
+                    Save encrypted note
+                  </Button>
+                  <Button onClick={handleClearNote} size="lg" variant="outline">
+                    Clear
+                  </Button>
+                </div>
+              </div>
+
+              <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-muted/45 p-5 text-sm leading-6 text-foreground/75">
+                <p>
+                  {statusMessage ||
+                    'Nothing encrypted yet. Save a note to exercise the synced E2EE flow.'}
+                </p>
+                {storedPayload ? (
+                  <p>
+                    Ciphertext preview:{' '}
+                    <span className="font-mono text-xs">
+                      {storedPayload.ciphertextHex.slice(0, 64)}...
+                    </span>
+                  </p>
+                ) : null}
+              </div>
+            </div>
+          ) : (
             <>
               <div className="grid grid-cols-2 gap-2 rounded-full border border-border/70 bg-muted/60 p-1">
                 {(['register', 'login'] as const).map((nextMode) => {
@@ -354,51 +429,6 @@ export function AuthExperience() {
                 <ArrowRight />
               </Button>
             </>
-          ) : (
-            <div className="grid gap-5">
-              <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-background/80 p-5">
-                <div className="flex items-center gap-3 text-foreground">
-                  <UserRound className="size-5 text-primary" />
-                  <p className="text-sm uppercase tracking-[0.22em] text-muted-foreground">
-                    Local vault
-                  </p>
-                </div>
-                <p className="text-sm leading-6 text-foreground/75">
-                  Save a note to verify the E2EE path. The backend stores only ciphertext,
-                  and only the current password-derived crypt key can decrypt it.
-                </p>
-                <textarea
-                  className="min-h-44 rounded-[1.5rem] border border-border bg-white px-4 py-4 text-base text-foreground outline-none transition focus:border-primary/60 focus:ring-2 focus:ring-primary/20"
-                  onChange={(event) => setDraft(event.target.value)}
-                  placeholder="Write something that should stay encrypted between web and mobile"
-                  value={draft}
-                />
-                <div className="flex flex-col gap-3 sm:flex-row">
-                  <Button onClick={handleSaveNote} size="lg">
-                    <LockKeyhole />
-                    Save encrypted note
-                  </Button>
-                  <Button onClick={handleClearNote} size="lg" variant="outline">
-                    Clear
-                  </Button>
-                </div>
-              </div>
-
-              <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-muted/45 p-5 text-sm leading-6 text-foreground/75">
-                <p>
-                  {statusMessage ||
-                    'Nothing encrypted yet. Save a note to exercise the synced E2EE flow.'}
-                </p>
-                {storedPayload ? (
-                  <p>
-                    Ciphertext preview:{' '}
-                    <span className="font-mono text-xs">
-                      {storedPayload.ciphertextHex.slice(0, 64)}...
-                    </span>
-                  </p>
-                ) : null}
-              </div>
-            </div>
           )}
         </div>
       </section>
@@ -415,7 +445,14 @@ type LabeledInputProps = {
   value: string;
 };
 
-function LabeledInput({ autoComplete, label, onChange, placeholder, type, value }: LabeledInputProps) {
+function LabeledInput({
+  autoComplete,
+  label,
+  onChange,
+  placeholder,
+  type,
+  value,
+}: Readonly<LabeledInputProps>) {
   return (
     <label className="grid gap-2">
       <span className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
