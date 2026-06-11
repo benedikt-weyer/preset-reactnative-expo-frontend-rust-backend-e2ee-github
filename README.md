@@ -31,7 +31,9 @@ settings screen to a LAN address such as `http://192.168.1.20:4000`.
 ## Backend env
 
 `pnpm setupenv` creates any missing `.env` files from nearby `.env.example`
-templates and automatically generates a local `JWT_SECRET` for the backend.
+templates, automatically generates a local `JWT_SECRET` for the backend,
+and on rerun syncs added or removed fields without overwriting existing
+values.
 
 `apps/backend/.env.example` defaults to the Postgres instance from
 `docker-compose.yml`.

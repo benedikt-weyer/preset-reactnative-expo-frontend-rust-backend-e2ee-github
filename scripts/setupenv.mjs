@@ -69,6 +69,25 @@ function parseEnv(content) {
   return values;
 }
 
+function parseEnvTemplate(content) {
+  return content.replace(/\r\n/g, '\n').split('\n').map((line) => {
+    if (!line || line.trimStart().startsWith('#')) {
+      return { type: 'raw', raw: line };
+    }
+
+    const separatorIndex = line.indexOf('=');
+    if (separatorIndex === -1) {
+      return { type: 'raw', raw: line };
+    }
+
+    return {
+      type: 'entry',
+      key: line.slice(0, separatorIndex).trim(),
+      value: line.slice(separatorIndex + 1),
+    };
+  });
+}
+
 function generateSecret() {
   return randomBytes(48).toString('base64url');
 }
@@ -93,18 +112,58 @@ function applyGeneratedSecrets(content) {
   return { content: nextContent, changed };
 }
 
+function resolveEnvValue(key, currentValue, fallbackValue) {
+  const placeholder = PLACEHOLDER_SECRETS.get(key);
+  const value = currentValue ?? fallbackValue;
+
+  if (placeholder && value === placeholder) {
+    return generateSecret();
+  }
+
+  return value;
+}
+
+function syncEnvContent(exampleContent, existingContent) {
+  const templateLines = parseEnvTemplate(exampleContent);
+  const existingValues = parseEnv(existingContent);
+
+  return templateLines
+    .map((line) => {
+      if (line.type !== 'entry') {
+        return line.raw;
+      }
+
+      const value = resolveEnvValue(
+        line.key,
+        existingValues.get(line.key),
+        line.value,
+      );
+
+      return `${line.key}=${value}`;
+    })
+    .join('\n');
+}
+
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 async function ensureEnvFile(examplePath) {
   const envPath = path.join(path.dirname(examplePath), '.env');
+  const template = await readFile(examplePath, 'utf8');
 
   if (existsSync(envPath)) {
-    return { envPath, action: 'skipped' };
+    const currentContent = await readFile(envPath, 'utf8');
+    const nextContent = syncEnvContent(template, currentContent);
+
+    if (nextContent === currentContent) {
+      return { envPath, action: 'skipped' };
+    }
+
+    await writeFile(envPath, nextContent, 'utf8');
+    return { envPath, action: 'synced' };
   }
 
-  const template = await readFile(examplePath, 'utf8');
   const { content } = applyGeneratedSecrets(template);
   await mkdir(path.dirname(envPath), { recursive: true });
   await writeFile(envPath, content, 'utf8');
@@ -129,6 +188,8 @@ async function main() {
     const relativePath = path.relative(repoRoot, result.envPath);
     if (result.action === 'created') {
       console.log(`created ${relativePath}`);
+    } else if (result.action === 'synced') {
+      console.log(`synced ${relativePath}`);
     } else {
       console.log(`kept existing ${relativePath}`);
     }
