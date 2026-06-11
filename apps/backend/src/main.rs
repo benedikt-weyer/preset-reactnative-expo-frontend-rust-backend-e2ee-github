@@ -5,11 +5,14 @@ mod error;
 mod features;
 mod routes;
 
+use std::time::Duration;
+
 use axum::{routing::get, Router};
-use sea_orm::{ConnectionTrait, Database, DbBackend, Statement};
+use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use sea_orm_migration::MigratorTrait;
+use tokio::time::sleep;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::{
     app_state::AppState,
@@ -18,15 +21,15 @@ use crate::{
     error::{AppError, AppResult},
 };
 
+const DATABASE_CONNECT_RETRY_DELAY: Duration = Duration::from_secs(2);
+
 #[tokio::main]
 async fn main() -> AppResult<()> {
     dotenvy::dotenv().ok();
     init_tracing();
 
     let config = Config::from_env()?;
-    let db = Database::connect(&config.database_url)
-        .await
-        .map_err(|_| AppError::internal("failed to connect to Postgres"))?;
+    let db = wait_for_database(&config.database_url).await?;
 
     Migrator::up(&db, None)
         .await
@@ -64,12 +67,51 @@ fn init_tracing() {
         .init();
 }
 
-pub async fn database_health(state: &AppState) -> AppResult<()> {
-    state
-        .db
-        .query_one(Statement::from_string(DbBackend::Postgres, "select 1".to_owned()))
-        .await
-        .map_err(|_| AppError::internal("database health check failed"))?;
+async fn wait_for_database(database_url: &str) -> AppResult<DatabaseConnection> {
+    let mut attempt = 1_u32;
+
+    loop {
+        match Database::connect(database_url).await {
+            Ok(db) => match ping_database(&db).await {
+                Ok(()) => {
+                    info!(attempt, "Postgres is online");
+                    return Ok(db);
+                }
+                Err(error) => {
+                    warn!(
+                        attempt,
+                        error = ?error,
+                        retry_in_seconds = DATABASE_CONNECT_RETRY_DELAY.as_secs(),
+                        "connected to Postgres but readiness check failed, retrying"
+                    );
+                }
+            },
+            Err(error) => {
+                warn!(
+                    attempt,
+                    error = %error,
+                    retry_in_seconds = DATABASE_CONNECT_RETRY_DELAY.as_secs(),
+                    "waiting for Postgres to become available"
+                );
+            }
+        }
+
+        sleep(DATABASE_CONNECT_RETRY_DELAY).await;
+        attempt += 1;
+    }
+}
+
+async fn ping_database(db: &DatabaseConnection) -> AppResult<()> {
+    db.query_one(Statement::from_string(
+        DbBackend::Postgres,
+        "select 1".to_owned(),
+    ))
+    .await
+    .map_err(|_| AppError::internal("database health check failed"))?;
 
     Ok(())
+}
+
+pub async fn database_health(state: &AppState) -> AppResult<()> {
+    ping_database(&state.db).await
 }
