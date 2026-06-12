@@ -1,5 +1,7 @@
 use chrono::Utc;
 use sea_orm::TransactionTrait;
+use serde::Serialize;
+use std::collections::HashSet;
 use uuid::Uuid;
 
 use crate::{
@@ -58,6 +60,24 @@ pub struct StoredNote {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteChangeEvent {
+    pub audience_principal_ids: Vec<Uuid>,
+    pub kind: NoteChangeKind,
+    pub note_id: Uuid,
+    pub occurred_at: String,
+    pub owner_user_id: Uuid,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NoteChangeKind {
+    Created,
+    Deleted,
+    Updated,
+}
+
 pub async fn list_notes(
     state: &AppState,
     authenticated_user: &AuthenticatedUser,
@@ -97,6 +117,7 @@ pub async fn create_note(
     validate_payload(&command)?;
 
     let now = Utc::now().fixed_offset();
+    let event_recipient_ids = collect_recipient_ids(&command.encrypted_deks, authenticated_user.owner_user_id);
     let transaction = state
         .db
         .begin()
@@ -121,6 +142,17 @@ pub async fn create_note(
         .await
         .map_err(|_| AppError::internal("failed to commit the note transaction"))?;
 
+    broadcast_note_change(
+        state,
+        NoteChangeEvent {
+            audience_principal_ids: event_recipient_ids,
+            kind: NoteChangeKind::Created,
+            note_id: stored_note.note.id,
+            occurred_at: now.to_rfc3339(),
+            owner_user_id: authenticated_user.owner_user_id,
+        },
+    );
+
     Ok(map_stored_note(stored_note))
 }
 
@@ -132,6 +164,7 @@ pub async fn update_note(
 ) -> AppResult<StoredNote> {
     validate_payload(&command)?;
 
+    let next_recipient_ids = collect_recipient_ids(&command.encrypted_deks, authenticated_user.owner_user_id);
     let transaction = state
         .db
         .begin()
@@ -145,6 +178,8 @@ pub async fn update_note(
     )
         .await?
         .ok_or_else(|| AppError::not_found("note not found"))?;
+    let previous_recipient_ids = repository::list_note_recipient_ids(&transaction, note_id).await?;
+    let updated_at = Utc::now().fixed_offset();
 
     let stored_note = repository::update_note(
         &transaction,
@@ -153,7 +188,7 @@ pub async fn update_note(
         repository::NoteChanges {
             encrypted_deks: map_wrapped_deks(&command.encrypted_deks)?,
             encrypted_payload: map_save_blob(&command.encrypted_payload),
-            updated_at: Utc::now().fixed_offset(),
+            updated_at,
         },
     )
     .await?;
@@ -162,6 +197,21 @@ pub async fn update_note(
         .commit()
         .await
         .map_err(|_| AppError::internal("failed to commit the note transaction"))?;
+
+    broadcast_note_change(
+        state,
+        NoteChangeEvent {
+            audience_principal_ids: merge_recipient_ids(
+                previous_recipient_ids,
+                next_recipient_ids,
+                authenticated_user.owner_user_id,
+            ),
+            kind: NoteChangeKind::Updated,
+            note_id: stored_note.note.id,
+            occurred_at: updated_at.to_rfc3339(),
+            owner_user_id: authenticated_user.owner_user_id,
+        },
+    );
 
     Ok(map_stored_note(stored_note))
 }
@@ -184,6 +234,8 @@ pub async fn delete_note(
     )
         .await?
         .ok_or_else(|| AppError::not_found("note not found"))?;
+    let recipient_ids = repository::list_note_recipient_ids(&transaction, note_id).await?;
+    let occurred_at = Utc::now().fixed_offset().to_rfc3339();
 
     repository::delete_note(&transaction, existing_note).await?;
 
@@ -192,7 +244,53 @@ pub async fn delete_note(
         .await
         .map_err(|_| AppError::internal("failed to commit the note transaction"))?;
 
+    broadcast_note_change(
+        state,
+        NoteChangeEvent {
+            audience_principal_ids: merge_recipient_ids(
+                recipient_ids,
+                Vec::new(),
+                authenticated_user.owner_user_id,
+            ),
+            kind: NoteChangeKind::Deleted,
+            note_id,
+            occurred_at,
+            owner_user_id: authenticated_user.owner_user_id,
+        },
+    );
+
     Ok(())
+}
+
+fn broadcast_note_change(state: &AppState, event: NoteChangeEvent) {
+    let _ = state.note_events.send(event);
+}
+
+fn collect_recipient_ids(
+    encrypted_deks: &[SaveWrappedDekCommand],
+    owner_user_id: Uuid,
+) -> Vec<Uuid> {
+    merge_recipient_ids(
+        encrypted_deks.iter().map(|encrypted_dek| encrypted_dek.user_id).collect(),
+        Vec::new(),
+        owner_user_id,
+    )
+}
+
+fn merge_recipient_ids(
+    previous_recipient_ids: Vec<Uuid>,
+    next_recipient_ids: Vec<Uuid>,
+    owner_user_id: Uuid,
+) -> Vec<Uuid> {
+    let mut recipient_ids = HashSet::new();
+
+    recipient_ids.insert(owner_user_id);
+    recipient_ids.extend(previous_recipient_ids);
+    recipient_ids.extend(next_recipient_ids);
+
+    let mut recipient_ids = recipient_ids.into_iter().collect::<Vec<_>>();
+    recipient_ids.sort_unstable();
+    recipient_ids
 }
 
 fn validate_payload(payload: &SaveNoteCommand) -> AppResult<()> {

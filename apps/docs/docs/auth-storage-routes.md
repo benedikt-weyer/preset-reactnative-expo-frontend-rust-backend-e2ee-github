@@ -151,6 +151,7 @@ api_users ||--o{ deks : user_id
 | `DELETE /api/auth/api-users/{api_user_id}` | remove one API user and delete its linked KEK metadata plus all linked DEK rows |
 | `POST /api/auth/api-users/{api_user_id}/provision` | append wrapped DEKs for notes that still need that API user recipient |
 | `GET /api/notes` | return encrypted notes plus the wrapped DEK for the authenticated principal |
+| `GET /api/notes/events?accessToken=...` | upgrade to a websocket stream and push note change events to the authenticated principal |
 | `POST /api/notes` | create an encrypted note row and its wrapped DEK rows |
 | `GET /api/notes/{note_id}` | return one encrypted note and the current principal wrapped DEK |
 | `PUT /api/notes/{note_id}` | replace the encrypted note payload and the full wrapped DEK recipient set |
@@ -169,6 +170,7 @@ if (Password change?) then (yes)
 endif
 
 if (Sync encrypted note?) then (yes)
+  :GET /api/notes/events for websocket updates;
   :GET /api/notes or GET /api/notes/{note_id};
   :POST /api/notes or PUT /api/notes/{note_id};
   :DELETE /api/notes/{note_id} when removing data;
@@ -189,4 +191,5 @@ stop
 - Rotating the password is not finished until the client verifies that every DEK row was rewrapped onto the newest KEK epoch.
 - Deleting an API user must remove both note-recipient DEKs and label DEKs before deleting that principal's KEK metadata, because DEK rows reference `kek_public_key`.
 - Deleting the owner account must remove note-resource DEKs as well as principal-linked DEKs, because note ciphertext rows and linked principals fan out across the same `deks` table.
+- Realtime note updates are pushed over a websocket stream, but the encrypted payload still comes from the normal notes routes. The event stream is a signal to refetch, not a second ciphertext transport.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

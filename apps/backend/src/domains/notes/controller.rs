@@ -1,15 +1,20 @@
 use axum::{
-    extract::{Path, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        Path, Query, State,
+    },
+    response::Response,
     routing::get,
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tokio::sync::broadcast;
 use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
     domains::{
-        auth::AuthenticatedUser,
+        auth::{service as auth_service, AuthenticatedUser},
         notes::service,
     },
     error::AppResult,
@@ -17,11 +22,18 @@ use crate::{
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/events", get(stream_note_events))
         .route("/", get(list_notes).post(create_note))
         .route(
             "/{note_id}",
             get(get_note).put(update_note).delete(delete_note),
         )
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NoteEventsQuery {
+    access_token: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -132,6 +144,63 @@ pub async fn delete_note(
 ) -> AppResult<Json<bool>> {
     service::delete_note(&state, &authenticated_user, note_id).await?;
     Ok(Json(true))
+}
+
+async fn stream_note_events(
+    ws: WebSocketUpgrade,
+    State(state): State<AppState>,
+    Query(query): Query<NoteEventsQuery>,
+) -> AppResult<Response> {
+    let authenticated_user = auth_service::authenticate_access_token(&state, &query.access_token)?;
+
+    Ok(ws.on_upgrade(move |socket| handle_note_event_socket(socket, state, authenticated_user)))
+}
+
+async fn handle_note_event_socket(
+    mut socket: WebSocket,
+    state: AppState,
+    authenticated_user: AuthenticatedUser,
+) {
+    let mut receiver = state.note_events.subscribe();
+
+    loop {
+        tokio::select! {
+            event_result = receiver.recv() => {
+                match event_result {
+                    Ok(event) => {
+                        if should_deliver_event(&event, &authenticated_user) {
+                            let Ok(payload) = serde_json::to_string(&event) else {
+                                continue;
+                            };
+
+                            if socket.send(Message::Text(payload.into())).await.is_err() {
+                                break;
+                            }
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Close(_))) | Some(Err(_)) | None => break,
+                    Some(Ok(_)) => {}
+                }
+            }
+        }
+    }
+}
+
+fn should_deliver_event(
+    event: &service::NoteChangeEvent,
+    authenticated_user: &AuthenticatedUser,
+) -> bool {
+    event.owner_user_id == authenticated_user.owner_user_id
+        && event
+            .audience_principal_ids
+            .iter()
+            .any(|principal_id| *principal_id == authenticated_user.principal_id)
 }
 
 fn map_save_command(payload: SaveNoteRequest) -> service::SaveNoteCommand {

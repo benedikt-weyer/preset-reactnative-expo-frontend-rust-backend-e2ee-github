@@ -9,6 +9,7 @@ use std::time::Duration;
 use axum::{routing::get, Router};
 use sea_orm::{ConnectionTrait, Database, DatabaseConnection, DbBackend, Statement};
 use sea_orm_migration::MigratorTrait;
+use tokio::sync::broadcast;
 use tokio::time::sleep;
 use tower_http::{cors::CorsLayer, trace::TraceLayer};
 use tracing::{info, warn};
@@ -29,12 +30,17 @@ async fn main() -> AppResult<()> {
 
     let config = Config::from_env()?;
     let db = wait_for_database(&config.database_url).await?;
+    let (note_events, _) = broadcast::channel(256);
 
     Migrator::up(&db, None).await.map_err(|error| {
         AppError::internal(format!("failed to run database migrations: {error}"))
     })?;
 
-    let state = AppState { config, db };
+    let state = AppState {
+        config,
+        db,
+        note_events,
+    };
 
     let app = Router::new()
         .route("/health", get(domains::system::health))

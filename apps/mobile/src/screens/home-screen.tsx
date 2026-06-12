@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
+import { subscribeToNoteEvents } from '@repo/note-realtime';
 
 import {
   decryptStringWithAsymmetricKek,
@@ -58,6 +59,7 @@ export function HomeScreen() {
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const selectedNoteIdRef = useRef<string | null>(null);
+  const isMountedRef = useRef(true);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
@@ -75,54 +77,72 @@ export function HomeScreen() {
     !kekMigrationStatus.allDeksUseLatestKek;
 
   useEffect(() => {
-    let isMounted = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
-    async function hydrateNotes() {
-      if (!session || linkedKeks.length === 0) {
-        if (isMounted) {
-          setNotes([]);
-          applySelectedNote(null);
-        }
+  const loadNotes = useCallback(async () => {
+    if (!session || linkedKeks.length === 0) {
+      if (!isMountedRef.current) {
         return;
       }
 
+      setNotes([]);
+      applySelectedNote(null);
+      return;
+    }
+
+    try {
+      await refreshKekMigrationStatus();
+      const remoteNotes = await fetchNotes({
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+
+      const decryptedNotes = sortNotes(
+        await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
+      );
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setNotes(decryptedNotes);
+      const nextSelectedNote =
+        decryptedNotes.find((note) => note.id === selectedNoteIdRef.current) ??
+        decryptedNotes[0] ??
+        null;
+
+      applySelectedNote(nextSelectedNote);
+      setStatusMessage(
+        nextSelectedNote
+          ? `Loaded ${decryptedNotes.length} encrypted note${decryptedNotes.length === 1 ? '' : 's'} from the backend.`
+          : 'No synced notes yet. Create one to push ciphertext to the backend.',
+      );
+    } catch (error) {
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      setNotes([]);
+      applySelectedNote(null);
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to load encrypted notes.',
+      );
+    }
+  }, [backendUrl, linkedKeks, refreshKekMigrationStatus, session]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function hydrateNotes() {
       try {
-        await refreshKekMigrationStatus();
-        const remoteNotes = await fetchNotes({
-          baseUrl: backendUrl,
-          token: session.token,
-        });
-
+        await loadNotes();
+      } catch {
         if (!isMounted) {
           return;
         }
-
-        const decryptedNotes = sortNotes(
-          await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
-        );
-
-        setNotes(decryptedNotes);
-        const nextSelectedNote =
-          decryptedNotes.find((note) => note.id === selectedNoteIdRef.current) ??
-          decryptedNotes[0] ??
-          null;
-
-        applySelectedNote(nextSelectedNote);
-        setStatusMessage(
-          nextSelectedNote
-            ? `Loaded ${decryptedNotes.length} encrypted note${decryptedNotes.length === 1 ? '' : 's'} from the backend.`
-            : 'No synced notes yet. Create one to push ciphertext to the backend.',
-        );
-      } catch (error) {
-        if (!isMounted) {
-          return;
-        }
-
-        setNotes([]);
-        applySelectedNote(null);
-        setStatusMessage(
-          error instanceof Error ? error.message : 'Unable to load encrypted notes.',
-        );
       }
     }
 
@@ -131,7 +151,34 @@ export function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [backendUrl, linkedKeks, refreshKekMigrationStatus, session]);
+  }, [loadNotes]);
+
+  useEffect(() => {
+    if (!session || linkedKeks.length === 0) {
+      return;
+    }
+
+    try {
+      const subscription = subscribeToNoteEvents({
+        accessToken: session.token,
+        baseUrl: backendUrl,
+        onError: (error) => {
+          setStatusMessage(error.message);
+        },
+        onEvent: () => {
+          void loadNotes();
+        },
+      });
+
+      return () => {
+        subscription.close();
+      };
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to connect note realtime updates.',
+      );
+    }
+  }, [backendUrl, linkedKeks.length, loadNotes, session]);
 
   function applySelectedNote(note: DecryptedNote | null) {
     selectedNoteIdRef.current = note?.id ?? null;

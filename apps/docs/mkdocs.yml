@@ -33,6 +33,7 @@ nav:
       - Registration And Login: auth-authentication.md
       - Password Rotation: auth-password-rotation.md
       - Note Encryption: auth-note-encryption.md
+      - Realtime Updates: auth-realtime-updates.md
       - Storage And Routes: auth-storage-routes.md
 markdown_extensions:
   - admonition

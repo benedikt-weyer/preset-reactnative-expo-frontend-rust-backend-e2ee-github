@@ -7,6 +7,7 @@
     "@react-navigation/bottom-tabs": "^7.16.2",
     "@react-navigation/native": "^7.2.5",
     "@repo/e2ee-auth": "workspace:*",
+    "@repo/note-realtime": "workspace:*",
     "expo": "~56.0.8",
     "expo-dev-client": "~56.0.18",
     "expo-linking": "~56.0.13",

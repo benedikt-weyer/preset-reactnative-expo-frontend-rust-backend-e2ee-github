@@ -147,6 +147,27 @@ pub struct AuthenticatedUser {
     pub principal_kind: PrincipalKind,
 }
 
+pub fn authenticate_access_token(state: &AppState, token: &str) -> AppResult<AuthenticatedUser> {
+    let token_data = decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+        &Validation::default(),
+    )
+    .map_err(|_| AppError::unauthorized("invalid bearer token"))?;
+
+    if token_data.claims.token_type != TokenType::Access {
+        return Err(AppError::unauthorized("an access token is required"));
+    }
+
+    Ok(AuthenticatedUser {
+        principal_id: Uuid::parse_str(&token_data.claims.sub)
+            .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
+        owner_user_id: Uuid::parse_str(&token_data.claims.owner_user_id)
+            .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
+        principal_kind: token_data.claims.principal_kind,
+    })
+}
+
 pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<AuthSession> {
     let email = normalize_email(&command.email)?;
     validate_auth_key(&command.auth_key)?;
@@ -1004,24 +1025,7 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
                 .or_else(|| authorization_header.strip_prefix("bearer "))
                 .ok_or_else(|| AppError::unauthorized("missing bearer token"))?;
 
-            let token_data = decode::<Claims>(
-                token,
-                &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
-                &Validation::default(),
-            )
-            .map_err(|_| AppError::unauthorized("invalid bearer token"))?;
-
-            if token_data.claims.token_type != TokenType::Access {
-                return Err(AppError::unauthorized("an access token is required"));
-            }
-
-            Ok(Self {
-                principal_id: Uuid::parse_str(&token_data.claims.sub)
-                    .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
-                owner_user_id: Uuid::parse_str(&token_data.claims.owner_user_id)
-                    .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
-                principal_kind: token_data.claims.principal_kind,
-            })
+            authenticate_access_token(state, token)
         })();
 
         ready(result)

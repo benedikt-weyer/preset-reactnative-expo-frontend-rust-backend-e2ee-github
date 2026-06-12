@@ -30,6 +30,9 @@ importers:
       '@repo/e2ee-auth':
         specifier: workspace:*
         version: link:../../packages/e2ee-auth
+      '@repo/note-realtime':
+        specifier: workspace:*
+        version: link:../../packages/note-realtime
       expo:
         specifier: ~56.0.8
         version: 56.0.11(@babel/core@7.29.7)(@expo/dom-webview@56.0.5)(@expo/metro-runtime@56.0.15)(expo-router@56.2.10)(react-native-worklets@0.8.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7))(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3))(react-native@0.85.3(@babel/core@7.29.7)(@react-native/metro-config@0.85.3(@babel/core@7.29.7))(@types/react@19.2.17)(react@19.2.3))(react@19.2.3)(typescript@6.0.3)
@@ -115,6 +118,9 @@ importers:
       '@repo/e2ee-auth':
         specifier: workspace:*
         version: link:../../packages/e2ee-auth
+      '@repo/note-realtime':
+        specifier: workspace:*
+        version: link:../../packages/note-realtime
       class-variance-authority:
         specifier: ^0.7.1
         version: 0.7.1
@@ -189,6 +195,12 @@ importers:
       vitest:
         specifier: 4.1.8
         version: 4.1.8(@types/node@25.9.3)(vite@8.0.16(@types/node@25.9.3)(jiti@1.21.7)(terser@5.48.0)(yaml@2.9.0))
+
+  packages/note-realtime:
+    devDependencies:
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
 
   packages/oqs-kek:
     dependencies:

@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, LockKeyhole, ShieldCheck, Trash2, UserRound } from 'lucide-react';
+import { subscribeToNoteEvents } from '@repo/note-realtime';
 
 import {
   createApiToken,
@@ -264,6 +265,50 @@ export function AuthExperience() {
     return () => {
       isCancelled = true;
     };
+  }, [backendUrl, isHydrated, linkedKeks, loadApiUsers, loadNotes, refreshKekMigrationStatus, session]);
+
+  useEffect(() => {
+    if (!isHydrated || !session || linkedKeks.length === 0) {
+      return;
+    }
+
+    const trimmedBackendUrl = backendUrl.trim();
+
+    try {
+      const subscription = subscribeToNoteEvents({
+        accessToken: session.token,
+        baseUrl: trimmedBackendUrl,
+        onError: (error) => {
+          setStatusMessage(error.message);
+        },
+        onEvent: () => {
+          void loadNotes({
+            emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
+            linkedKeks,
+            token: session.token,
+            trimmedBackendUrl,
+          });
+
+          if (session.currentPrincipal.kind === 'user') {
+            void loadApiUsers({
+              linkedKeks,
+              token: session.token,
+              trimmedBackendUrl,
+            });
+          }
+
+          void refreshKekMigrationStatus(session, trimmedBackendUrl);
+        },
+      });
+
+      return () => {
+        subscription.close();
+      };
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to connect note realtime updates.',
+      );
+    }
   }, [backendUrl, isHydrated, linkedKeks, loadApiUsers, loadNotes, refreshKekMigrationStatus, session]);
 
   const missingMigrationKeks = session

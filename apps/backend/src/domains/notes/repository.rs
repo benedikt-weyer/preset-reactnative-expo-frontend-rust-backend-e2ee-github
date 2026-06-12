@@ -306,6 +306,18 @@ where
         .map(|notes| notes.into_iter().map(|note| note.id).collect())
 }
 
+pub async fn list_note_recipient_ids<C>(db: &C, note_id: Uuid) -> AppResult<Vec<Uuid>>
+where
+    C: ConnectionTrait,
+{
+    dek_entity::Entity::find()
+        .filter(dek_entity::Column::ResourceId.eq(note_id))
+        .all(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query note recipients"))
+        .map(|deks| deks.into_iter().map(|dek| dek.user_id).collect())
+}
+
 pub async fn list_missing_note_ids_for_principal<C>(
     db: &C,
     owner_user_id: Uuid,

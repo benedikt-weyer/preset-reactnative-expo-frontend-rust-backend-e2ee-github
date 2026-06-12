@@ -74,6 +74,7 @@ end note
 - [Registration And Login](auth-authentication.md) explains account creation, salt lookup, and login verification with sequence diagrams.
 - [Password Rotation](auth-password-rotation.md) covers rotating the auth verifier, creating a new KEK epoch, and rewrapping DEKs.
 - [Note Encryption](auth-note-encryption.md) shows how note payloads and wrapped DEKs move through save and load paths.
+- [Realtime Updates](auth-realtime-updates.md) documents the websocket event stream that pushes note changes to authenticated clients.
 - [Storage And Routes](auth-storage-routes.md) summarizes persisted fields, API routes, and operational implications.
 
 ## Flow summary
