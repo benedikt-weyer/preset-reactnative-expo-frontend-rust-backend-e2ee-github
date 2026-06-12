@@ -14,7 +14,7 @@ use uuid::Uuid;
 use crate::{
     app_state::AppState,
     domains::{
-        auth::{entity, kek_metadata_entity, repository},
+        auth::{api_user_entity, entity, kek_metadata_entity, repository, PrincipalKind},
         notes,
     },
     error::{AppError, AppResult},
@@ -23,7 +23,7 @@ use crate::{
 pub struct RegisterCommand {
     pub email: String,
     pub auth_key: String,
-    pub kek_id: String,
+    pub kek_public_key: String,
     pub salt_hex: String,
 }
 
@@ -32,13 +32,33 @@ pub struct LoginCommand {
     pub auth_key: String,
 }
 
+pub struct ApiUserLoginCommand {
+    pub username: String,
+    pub auth_key: String,
+}
+
 pub struct RotatePasswordCommand {
-    pub kek_id: String,
+    pub kek_public_key: String,
     pub new_auth_key: String,
 }
 
+pub struct CreateApiUserCommand {
+    pub api_user_id: Uuid,
+    pub auth_key: String,
+    pub encrypted_label: notes::service::SaveEncryptedBlobCommand,
+    pub encrypted_label_deks: Vec<notes::service::SaveWrappedDekCommand>,
+    pub kek_public_key: String,
+}
+
+pub struct ProvisionApiUserDekCommand {
+    pub resource_id: Uuid,
+    pub wrapped_dek: notes::service::SaveWrappedDekCommand,
+}
+
 pub struct AuthSession {
+    pub current_principal: PrincipalSummary,
     pub kek_metadatas: Vec<KekMetadata>,
+    pub linked_principals: Vec<LinkedPrincipal>,
     pub token: String,
     pub refresh_token: String,
     pub user_id: Uuid,
@@ -54,7 +74,7 @@ pub struct KekMigrationStatus {
     pub all_deks_use_latest_kek: bool,
     pub latest_kek_dek_count: u64,
     pub latest_kek_epoch_version: i32,
-    pub latest_kek_id: String,
+    pub latest_kek_public_key: String,
     pub pending_dek_count: u64,
     pub total_dek_count: u64,
 }
@@ -62,14 +82,53 @@ pub struct KekMigrationStatus {
 #[derive(Clone, Debug)]
 pub struct KekMetadata {
     pub kek_epoch_version: i32,
-    pub kek_id: String,
+    pub kek_public_key: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct PrincipalSummary {
+    pub id: Uuid,
+    pub kind: PrincipalKind,
+    pub email: Option<String>,
+    pub username: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct LinkedPrincipal {
+    pub id: Uuid,
+    pub kind: PrincipalKind,
+    pub email: Option<String>,
+    pub username: Option<String>,
+    pub latest_kek_epoch_version: i32,
+    pub latest_kek_public_key: String,
+}
+
+pub struct ApiUserProvisioningStatus {
+    pub completed_resource_count: u64,
+    pub pending_note_ids: Vec<Uuid>,
+    pub pending_resource_count: u64,
+    pub total_resource_count: u64,
+}
+
+pub struct ApiUserRecord {
+    pub created_at: String,
+    pub encrypted_label: notes::service::StoredEncryptedBlob,
+    pub encrypted_label_dek: notes::service::StoredWrappedDek,
+    pub id: Uuid,
+    pub latest_kek_epoch_version: i32,
+    pub latest_kek_public_key: String,
+    pub provisioning: ApiUserProvisioningStatus,
+    pub updated_at: String,
+    pub username: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Claims {
     sub: String,
+    owner_user_id: String,
     email: String,
+    principal_kind: PrincipalKind,
     token_type: TokenType,
     exp: usize,
 }
@@ -83,13 +142,15 @@ enum TokenType {
 
 #[derive(Clone, Debug)]
 pub struct AuthenticatedUser {
-    pub user_id: Uuid,
+    pub principal_id: Uuid,
+    pub owner_user_id: Uuid,
+    pub principal_kind: PrincipalKind,
 }
 
 pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<AuthSession> {
     let email = normalize_email(&command.email)?;
     validate_auth_key(&command.auth_key)?;
-    let kek_id = normalize_kek_id(&command.kek_id)?;
+    let kek_public_key = normalize_kek_public_key(&command.kek_public_key)?;
     let auth_salt = normalize_auth_salt(&command.salt_hex)?;
 
     if repository::find_user_by_email(&state.db, &email)
@@ -120,7 +181,7 @@ pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<A
     let initial_kek_metadata = repository::insert_kek_metadata(
         &transaction,
         new_user.id,
-        kek_id,
+        kek_public_key,
         1,
         now,
     )
@@ -131,7 +192,20 @@ pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<A
         .await
         .map_err(|_| AppError::internal("failed to commit the auth transaction"))?;
 
-    build_auth_session(state, &new_user, vec![initial_kek_metadata])
+    build_auth_session(
+        state,
+        &new_user,
+        repository::PrincipalRecord {
+            principal_id: new_user.id,
+            owner_user_id: new_user.id,
+            kind: PrincipalKind::User,
+            email: Some(new_user.email.clone()),
+            username: None,
+            auth_key_hash: new_user.auth_key_hash.clone(),
+        },
+        vec![initial_kek_metadata],
+    )
+    .await
 }
 
 pub async fn salt(state: &AppState, email: &str) -> AppResult<SaltMaterial> {
@@ -163,19 +237,57 @@ pub async fn login(state: &AppState, command: LoginCommand) -> AppResult<AuthSes
         .await?
         .ok_or_else(|| AppError::unauthorized("invalid email or auth key"))?;
 
-    let supplied_hash = hash_auth_key(&command.auth_key);
-    if supplied_hash
-        .as_bytes()
-        .ct_eq(user.auth_key_hash.as_bytes())
-        .unwrap_u8()
-        != 1
-    {
-        return Err(AppError::unauthorized("invalid email or auth key"));
-    }
+    assert_auth_key_matches(&command.auth_key, &user.auth_key_hash)?;
 
     let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, user.id).await?;
 
-    build_auth_session(state, &user, kek_metadatas)
+    build_auth_session(
+        state,
+        &user,
+        repository::PrincipalRecord {
+            principal_id: user.id,
+            owner_user_id: user.id,
+            kind: PrincipalKind::User,
+            email: Some(user.email.clone()),
+            username: None,
+            auth_key_hash: user.auth_key_hash.clone(),
+        },
+        kek_metadatas,
+    )
+    .await
+}
+
+pub async fn login_api_user(
+    state: &AppState,
+    command: ApiUserLoginCommand,
+) -> AppResult<AuthSession> {
+    let username = normalize_username(&command.username)?;
+    validate_auth_key(&command.auth_key)?;
+
+    let api_user = repository::find_api_user_by_username(&state.db, &username)
+        .await?
+        .ok_or_else(|| AppError::unauthorized("invalid username or auth key"))?;
+    assert_auth_key_matches(&command.auth_key, &api_user.auth_key_hash)?;
+
+    let owner_user = repository::find_user_by_id(&state.db, api_user.user_id)
+        .await?
+        .ok_or_else(|| AppError::internal("missing owner user for api user login"))?;
+    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, api_user.id).await?;
+
+    build_auth_session(
+        state,
+        &owner_user,
+        repository::PrincipalRecord {
+            principal_id: api_user.id,
+            owner_user_id: api_user.user_id,
+            kind: PrincipalKind::ApiUser,
+            email: None,
+            username: Some(api_user.username.clone()),
+            auth_key_hash: api_user.auth_key_hash.clone(),
+        },
+        kek_metadatas,
+    )
+    .await
 }
 
 pub async fn rotate_password(
@@ -183,20 +295,26 @@ pub async fn rotate_password(
     authenticated_user: &AuthenticatedUser,
     command: RotatePasswordCommand,
 ) -> AppResult<AuthSession> {
+    if authenticated_user.principal_kind != PrincipalKind::User {
+        return Err(AppError::bad_request("api users cannot rotate the account password"));
+    }
+
     validate_auth_key(&command.new_auth_key)?;
-    let kek_id = normalize_kek_id(&command.kek_id)?;
+    let kek_public_key = normalize_kek_public_key(&command.kek_public_key)?;
 
     let transaction = state
         .db
         .begin()
         .await
         .map_err(|_| AppError::internal("failed to start the auth transaction"))?;
-    let user = repository::find_user_by_id(&transaction, authenticated_user.user_id)
+    let user = repository::find_user_by_id(&transaction, authenticated_user.owner_user_id)
         .await?
         .ok_or_else(|| AppError::unauthorized("invalid bearer token"))?;
-    let next_epoch_version =
-        repository::next_kek_epoch_version_for_user(&transaction, authenticated_user.user_id)
-            .await?;
+    let next_epoch_version = repository::next_kek_epoch_version_for_user(
+        &transaction,
+        authenticated_user.principal_id,
+    )
+    .await?;
     let now = Utc::now().fixed_offset();
 
     let updated_user = repository::update_user_auth_key_hash(
@@ -207,8 +325,8 @@ pub async fn rotate_password(
     .await?;
     repository::insert_kek_metadata(
         &transaction,
-        authenticated_user.user_id,
-        kek_id,
+        authenticated_user.principal_id,
+        kek_public_key,
         next_epoch_version,
         now,
     )
@@ -219,26 +337,39 @@ pub async fn rotate_password(
         .await
         .map_err(|_| AppError::internal("failed to commit the auth transaction"))?;
 
-    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, authenticated_user.user_id)
+    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, authenticated_user.principal_id)
         .await?;
 
-    build_auth_session(state, &updated_user, kek_metadatas)
+    build_auth_session(
+        state,
+        &updated_user,
+        repository::PrincipalRecord {
+            principal_id: updated_user.id,
+            owner_user_id: updated_user.id,
+            kind: PrincipalKind::User,
+            email: Some(updated_user.email.clone()),
+            username: None,
+            auth_key_hash: updated_user.auth_key_hash.clone(),
+        },
+        kek_metadatas,
+    )
+    .await
 }
 
 pub async fn get_kek_migration_status(
     state: &AppState,
     authenticated_user: &AuthenticatedUser,
 ) -> AppResult<KekMigrationStatus> {
-    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, authenticated_user.user_id)
+    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, authenticated_user.principal_id)
         .await?;
     let latest_kek = kek_metadatas
         .iter()
         .max_by_key(|metadata| metadata.kek_epoch_version)
         .ok_or_else(|| AppError::internal("missing kek metadata for the account"))?;
-    let usage_summary = notes::repository::summarize_kek_usage_for_user(
+    let usage_summary = notes::repository::summarize_kek_usage_for_principal(
         &state.db,
-        authenticated_user.user_id,
-        &latest_kek.kek_id,
+        authenticated_user.principal_id,
+        &latest_kek.kek_public_key,
     )
     .await?;
     let pending_dek_count = usage_summary
@@ -249,34 +380,266 @@ pub async fn get_kek_migration_status(
         all_deks_use_latest_kek: pending_dek_count == 0,
         latest_kek_dek_count: usage_summary.total_latest_kek_deks,
         latest_kek_epoch_version: latest_kek.kek_epoch_version,
-        latest_kek_id: latest_kek.kek_id.clone(),
+        latest_kek_public_key: latest_kek.kek_public_key.clone(),
         pending_dek_count,
         total_dek_count: usage_summary.total_deks,
     })
 }
 
-fn build_auth_session(
+pub async fn list_linked_principals(
     state: &AppState,
-    user: &entity::Model,
+    authenticated_user: &AuthenticatedUser,
+) -> AppResult<Vec<LinkedPrincipal>> {
+    repository::list_linked_principals_for_owner(&state.db, authenticated_user.owner_user_id)
+        .await?
+        .into_iter()
+        .map(map_linked_principal)
+        .collect()
+}
+
+pub async fn list_api_users(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+) -> AppResult<Vec<ApiUserRecord>> {
+    require_user_principal(authenticated_user)?;
+
+    let api_users = repository::list_api_users_for_owner(&state.db, authenticated_user.owner_user_id).await?;
+    let mut output = Vec::with_capacity(api_users.len());
+
+    for api_user in api_users {
+        output.push(build_api_user_record(state, authenticated_user.principal_id, api_user).await?);
+    }
+
+    Ok(output)
+}
+
+pub async fn get_api_user(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+    api_user_id: Uuid,
+) -> AppResult<ApiUserRecord> {
+    require_user_principal(authenticated_user)?;
+
+    let api_user = repository::find_api_user_by_id(&state.db, api_user_id)
+        .await?
+        .filter(|api_user| api_user.user_id == authenticated_user.owner_user_id)
+        .ok_or_else(|| AppError::not_found("api user not found"))?;
+
+    build_api_user_record(state, authenticated_user.principal_id, api_user).await
+}
+
+pub async fn create_api_user(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+    command: CreateApiUserCommand,
+) -> AppResult<ApiUserRecord> {
+    require_user_principal(authenticated_user)?;
+    validate_auth_key(&command.auth_key)?;
+    let kek_public_key = normalize_kek_public_key(&command.kek_public_key)?;
+    validate_encrypted_blob(&command.encrypted_label, "encryptedLabel")?;
+    let label_deks = map_wrapped_deks(&command.encrypted_label_deks)?;
+
+    if repository::find_api_user_by_id(&state.db, command.api_user_id)
+        .await?
+        .is_some()
+    {
+        return Err(AppError::conflict("an api user already exists for this id"));
+    }
+
+    let linked_principals = repository::list_linked_principals_for_owner(&state.db, authenticated_user.owner_user_id).await?;
+    let owner_principal = linked_principals
+        .iter()
+        .find(|principal| principal.principal.principal_id == authenticated_user.owner_user_id)
+        .ok_or_else(|| AppError::internal("missing owner principal metadata"))?;
+
+    validate_label_deks(
+        &label_deks,
+        authenticated_user.owner_user_id,
+        command.api_user_id,
+        &owner_principal.latest_kek.kek_public_key,
+        &kek_public_key,
+    )?;
+
+    let now = Utc::now().fixed_offset();
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start the api user transaction"))?;
+
+    let api_user = repository::insert_api_user(
+        &transaction,
+        command.api_user_id,
+        authenticated_user.owner_user_id,
+        generate_api_username(command.api_user_id),
+        hash_auth_key(&command.auth_key),
+        command.encrypted_label.algorithm.trim().to_owned(),
+        command.encrypted_label.ciphertext_hex.trim().to_ascii_lowercase(),
+        command.encrypted_label.nonce_hex.trim().to_ascii_lowercase(),
+        command.encrypted_label.version,
+        now,
+        now,
+    )
+    .await?;
+
+    repository::insert_kek_metadata(&transaction, api_user.id, kek_public_key.clone(), 1, now).await?;
+    notes::repository::upsert_wrapped_deks(
+        &transaction,
+        label_deks
+            .into_iter()
+            .map(|wrapped_dek| notes::repository::ResourceWrappedDek {
+                resource_id: api_user.id,
+                wrapped_dek,
+            })
+            .collect(),
+        now,
+        now,
+    )
+    .await?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit the api user transaction"))?;
+
+    build_api_user_record(state, authenticated_user.principal_id, api_user).await
+}
+
+pub async fn provision_api_user_deks(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+    api_user_id: Uuid,
+    commands: Vec<ProvisionApiUserDekCommand>,
+) -> AppResult<ApiUserRecord> {
+    require_user_principal(authenticated_user)?;
+
+    let api_user = repository::find_api_user_by_id(&state.db, api_user_id)
+        .await?
+        .filter(|api_user| api_user.user_id == authenticated_user.owner_user_id)
+        .ok_or_else(|| AppError::not_found("api user not found"))?;
+    let latest_kek = repository::list_kek_metadata_for_user(&state.db, api_user.id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::internal("missing kek metadata for the api user"))?;
+    let valid_note_ids = notes::repository::list_note_ids_for_owner(&state.db, authenticated_user.owner_user_id)
+        .await?
+        .into_iter()
+        .collect::<std::collections::HashSet<_>>();
+
+    let wrapped_deks = commands
+        .into_iter()
+        .map(|command| {
+            if !valid_note_ids.contains(&command.resource_id) {
+                return Err(AppError::validation("resourceId must reference a note owned by the account"));
+            }
+
+            let wrapped_dek = map_wrapped_dek(&command.wrapped_dek)?;
+
+            if wrapped_dek.user_id != api_user.id {
+                return Err(AppError::validation("wrappedDeks.userId must match the provisioned api user"));
+            }
+
+            if wrapped_dek.kek_public_key != latest_kek.kek_public_key {
+                return Err(AppError::validation("wrappedDeks.kekId must match the api user's latest KEK id"));
+            }
+
+            Ok(notes::repository::ResourceWrappedDek {
+                resource_id: command.resource_id,
+                wrapped_dek,
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+
+    let now = Utc::now().fixed_offset();
+    notes::repository::upsert_wrapped_deks(&state.db, wrapped_deks, now, now).await?;
+
+    build_api_user_record(state, authenticated_user.principal_id, api_user).await
+}
+
+async fn build_auth_session(
+    state: &AppState,
+    owner_user: &entity::Model,
+    current_principal: repository::PrincipalRecord,
     kek_metadatas: Vec<kek_metadata_entity::Model>,
 ) -> AppResult<AuthSession> {
+    let linked_principals = repository::list_linked_principals_for_owner(&state.db, owner_user.id)
+        .await?
+        .into_iter()
+        .map(map_linked_principal)
+        .collect::<AppResult<Vec<_>>>()?;
+
     Ok(AuthSession {
+        current_principal: map_principal_summary(&current_principal),
         kek_metadatas: kek_metadatas.into_iter().map(map_kek_metadata).collect(),
-        token: issue_token(state, user, TokenType::Access)?,
-        refresh_token: issue_token(state, user, TokenType::Refresh)?,
-        user_id: user.id,
-        email: user.email.clone(),
+        linked_principals,
+        token: issue_token(state, &current_principal, owner_user, TokenType::Access)?,
+        refresh_token: issue_token(state, &current_principal, owner_user, TokenType::Refresh)?,
+        user_id: owner_user.id,
+        email: owner_user.email.clone(),
     })
 }
 
-fn map_kek_metadata(metadata: kek_metadata_entity::Model) -> KekMetadata {
-    KekMetadata {
-        kek_epoch_version: metadata.kek_epoch_version,
-        kek_id: metadata.kek_id,
-    }
+async fn build_api_user_record(
+    state: &AppState,
+    current_principal_id: Uuid,
+    api_user: api_user_entity::Model,
+) -> AppResult<ApiUserRecord> {
+    let latest_kek = repository::list_kek_metadata_for_user(&state.db, api_user.id)
+        .await?
+        .into_iter()
+        .next()
+        .ok_or_else(|| AppError::internal("missing kek metadata for the api user"))?;
+    let encrypted_label_dek = notes::repository::find_wrapped_dek(&state.db, api_user.id, current_principal_id)
+        .await?
+        .ok_or_else(|| AppError::internal("missing label dek for the current principal"))?;
+    let label_provisioned = notes::repository::find_wrapped_dek(&state.db, api_user.id, api_user.id)
+        .await?
+        .is_some();
+    let note_ids = notes::repository::list_note_ids_for_owner(&state.db, api_user.user_id).await?;
+    let pending_note_ids = notes::repository::list_missing_note_ids_for_principal(&state.db, api_user.user_id, api_user.id)
+        .await?;
+    let total_resource_count = note_ids.len() as u64 + 1;
+    let pending_resource_count = pending_note_ids.len() as u64 + if label_provisioned { 0 } else { 1 };
+    let completed_resource_count = total_resource_count.saturating_sub(pending_resource_count);
+
+    Ok(ApiUserRecord {
+        created_at: api_user.created_at.to_rfc3339(),
+        encrypted_label: notes::service::StoredEncryptedBlob {
+            algorithm: api_user.label_algorithm,
+            ciphertext_hex: api_user.label_ciphertext_hex,
+            nonce_hex: api_user.label_nonce_hex,
+            version: api_user.label_version,
+        },
+        encrypted_label_dek: notes::service::StoredWrappedDek {
+            algorithm: encrypted_label_dek.algorithm,
+            kem_ciphertext_hex: encrypted_label_dek.kem_ciphertext_hex,
+            kek_public_key: encrypted_label_dek.kek_public_key,
+            nonce_hex: encrypted_label_dek.nonce_hex,
+            user_id: encrypted_label_dek.user_id,
+            version: encrypted_label_dek.version,
+            wrapped_dek_hex: encrypted_label_dek.wrapped_dek_hex,
+        },
+        id: api_user.id,
+        latest_kek_epoch_version: latest_kek.kek_epoch_version,
+        latest_kek_public_key: latest_kek.kek_public_key,
+        provisioning: ApiUserProvisioningStatus {
+            completed_resource_count,
+            pending_note_ids,
+            pending_resource_count,
+            total_resource_count,
+        },
+        updated_at: api_user.updated_at.to_rfc3339(),
+        username: api_user.username,
+    })
 }
 
-fn issue_token(state: &AppState, user: &entity::Model, token_type: TokenType) -> AppResult<String> {
+fn issue_token(
+    state: &AppState,
+    current_principal: &repository::PrincipalRecord,
+    owner_user: &entity::Model,
+    token_type: TokenType,
+) -> AppResult<String> {
     let ttl_minutes = match token_type {
         TokenType::Access => state.config.jwt_ttl_minutes,
         TokenType::Refresh => state.config.jwt_refresh_ttl_minutes,
@@ -285,8 +648,10 @@ fn issue_token(state: &AppState, user: &entity::Model, token_type: TokenType) ->
         .checked_add_signed(chrono::Duration::minutes(ttl_minutes))
         .ok_or_else(|| AppError::internal("failed to calculate the session expiry"))?;
     let claims = Claims {
-        sub: user.id.to_string(),
-        email: user.email.clone(),
+        sub: current_principal.principal_id.to_string(),
+        owner_user_id: current_principal.owner_user_id.to_string(),
+        email: owner_user.email.clone(),
+        principal_kind: current_principal.kind,
         token_type,
         exp: expires_at.timestamp() as usize,
     };
@@ -308,11 +673,35 @@ fn normalize_email(email: &str) -> AppResult<String> {
     Ok(normalized)
 }
 
+fn normalize_username(username: &str) -> AppResult<String> {
+    let normalized = username.trim().to_ascii_lowercase();
+
+    if normalized.is_empty() {
+        return Err(AppError::bad_request("a valid username is required"));
+    }
+
+    Ok(normalized)
+}
+
 fn validate_auth_key(auth_key: &str) -> AppResult<()> {
     if auth_key.trim().len() < 32 {
         return Err(AppError::bad_request(
             "authKey must be a non-empty derived key string",
         ));
+    }
+
+    Ok(())
+}
+
+fn assert_auth_key_matches(auth_key: &str, auth_key_hash: &str) -> AppResult<()> {
+    let supplied_hash = hash_auth_key(auth_key);
+    if supplied_hash
+        .as_bytes()
+        .ct_eq(auth_key_hash.as_bytes())
+        .unwrap_u8()
+        != 1
+    {
+        return Err(AppError::unauthorized("invalid credentials"));
     }
 
     Ok(())
@@ -334,10 +723,10 @@ fn normalize_auth_salt(auth_salt: &str) -> AppResult<String> {
     Ok(normalized)
 }
 
-fn normalize_kek_id(kek_id: &str) -> AppResult<String> {
+fn normalize_kek_public_key(kek_public_key: &str) -> AppResult<String> {
     const ML_KEM_768_PUBLIC_KEY_BYTES: usize = 1184;
 
-    let normalized = kek_id.trim().to_ascii_lowercase();
+    let normalized = kek_public_key.trim().to_ascii_lowercase();
     let decoded = hex::decode(&normalized)
         .map_err(|_| AppError::bad_request("kekId must be a valid hexadecimal string"))?;
 
@@ -352,6 +741,172 @@ fn normalize_kek_id(kek_id: &str) -> AppResult<String> {
 
 fn hash_auth_key(auth_key: &str) -> String {
     hex::encode(Sha512::digest(auth_key.as_bytes()))
+}
+
+fn map_kek_metadata(metadata: kek_metadata_entity::Model) -> KekMetadata {
+    KekMetadata {
+        kek_epoch_version: metadata.kek_epoch_version,
+        kek_public_key: metadata.kek_public_key,
+    }
+}
+
+fn map_principal_summary(principal: &repository::PrincipalRecord) -> PrincipalSummary {
+    PrincipalSummary {
+        id: principal.principal_id,
+        kind: principal.kind,
+        email: principal.email.clone(),
+        username: principal.username.clone(),
+    }
+}
+
+fn map_linked_principal(
+    linked_principal: repository::LinkedPrincipalRecord,
+) -> AppResult<LinkedPrincipal> {
+    Ok(LinkedPrincipal {
+        id: linked_principal.principal.principal_id,
+        kind: linked_principal.principal.kind,
+        email: linked_principal.principal.email,
+        username: linked_principal.principal.username,
+        latest_kek_epoch_version: linked_principal.latest_kek.kek_epoch_version,
+        latest_kek_public_key: linked_principal.latest_kek.kek_public_key,
+    })
+}
+
+fn require_user_principal(authenticated_user: &AuthenticatedUser) -> AppResult<()> {
+    if authenticated_user.principal_kind != PrincipalKind::User {
+        return Err(AppError::bad_request("this action requires a primary user session"));
+    }
+
+    Ok(())
+}
+
+fn generate_api_username(api_user_id: Uuid) -> String {
+    let compact = api_user_id.simple().to_string();
+    format!("api-{}", &compact[..16])
+}
+
+fn validate_encrypted_blob(
+    payload: &notes::service::SaveEncryptedBlobCommand,
+    field_name: &str,
+) -> AppResult<()> {
+    if payload.algorithm.trim() != "xsalsa20-poly1305" {
+        return Err(AppError::validation(format!(
+            "{field_name}.algorithm must be xsalsa20-poly1305"
+        )));
+    }
+
+    if payload.version != 1 {
+        return Err(AppError::validation(format!("{field_name}.version must be 1")));
+    }
+
+    normalize_hex_field(&payload.ciphertext_hex, &format!("{field_name}.ciphertextHex"))?;
+    normalize_hex_field(&payload.nonce_hex, &format!("{field_name}.nonceHex"))?;
+
+    Ok(())
+}
+
+fn map_wrapped_deks(
+    payloads: &[notes::service::SaveWrappedDekCommand],
+) -> AppResult<Vec<notes::repository::WrappedDek>> {
+    payloads.iter().map(map_wrapped_dek).collect()
+}
+
+fn map_wrapped_dek(
+    payload: &notes::service::SaveWrappedDekCommand,
+) -> AppResult<notes::repository::WrappedDek> {
+    if payload.algorithm.trim() != "ml-kem-768-encapsulated+xsalsa20-poly1305" {
+        return Err(AppError::validation(
+            "wrappedDeks.algorithm must be ml-kem-768-encapsulated+xsalsa20-poly1305",
+        ));
+    }
+
+    if payload.version != 3 {
+        return Err(AppError::validation("wrappedDeks.version must be 3"));
+    }
+
+    normalize_kek_public_key(&payload.kek_public_key)?;
+    normalize_hex_field(&payload.wrapped_dek_hex, "wrappedDeks.wrappedDekHex")?;
+    normalize_hex_field(&payload.nonce_hex, "wrappedDeks.nonceHex")?;
+    normalize_exact_hex_field(&payload.kem_ciphertext_hex, "wrappedDeks.kemCiphertextHex", 1088)?;
+
+    Ok(notes::repository::WrappedDek {
+        algorithm: payload.algorithm.trim().to_owned(),
+        kem_ciphertext_hex: payload.kem_ciphertext_hex.trim().to_ascii_lowercase(),
+        kek_public_key: payload.kek_public_key.trim().to_ascii_lowercase(),
+        nonce_hex: payload.nonce_hex.trim().to_ascii_lowercase(),
+        user_id: payload.user_id,
+        version: payload.version,
+        wrapped_dek_hex: payload.wrapped_dek_hex.trim().to_ascii_lowercase(),
+    })
+}
+
+fn validate_label_deks(
+    wrapped_deks: &[notes::repository::WrappedDek],
+    owner_user_id: Uuid,
+    api_user_id: Uuid,
+    owner_kek_public_key: &str,
+    api_user_kek_public_key: &str,
+) -> AppResult<()> {
+    if wrapped_deks.len() != 2 {
+        return Err(AppError::validation(
+            "encryptedLabelDeks must contain exactly the owner and api user wraps",
+        ));
+    }
+
+    let owner_wrapped_dek = wrapped_deks
+        .iter()
+        .find(|wrapped_dek| wrapped_dek.user_id == owner_user_id)
+        .ok_or_else(|| AppError::validation("encryptedLabelDeks must contain the owner wrap"))?;
+    let api_wrapped_dek = wrapped_deks
+        .iter()
+        .find(|wrapped_dek| wrapped_dek.user_id == api_user_id)
+        .ok_or_else(|| AppError::validation("encryptedLabelDeks must contain the api user wrap"))?;
+
+    if owner_wrapped_dek.kek_public_key != owner_kek_public_key {
+        return Err(AppError::validation(
+            "encryptedLabelDeks owner wrap must target the owner's latest KEK id",
+        ));
+    }
+
+    if api_wrapped_dek.kek_public_key != api_user_kek_public_key {
+        return Err(AppError::validation(
+            "encryptedLabelDeks api user wrap must target the api user's KEK id",
+        ));
+    }
+
+    Ok(())
+}
+
+fn normalize_hex_field(value: &str, field_name: &str) -> AppResult<()> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    if normalized.is_empty() {
+        return Err(AppError::validation(format!("{field_name} is required")));
+    }
+
+    hex::decode(&normalized)
+        .map_err(|_| AppError::validation(format!("{field_name} must be valid hex")))?;
+
+    Ok(())
+}
+
+fn normalize_exact_hex_field(value: &str, field_name: &str, expected_bytes: usize) -> AppResult<()> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    if normalized.is_empty() {
+        return Err(AppError::validation(format!("{field_name} is required")));
+    }
+
+    let decoded = hex::decode(&normalized)
+        .map_err(|_| AppError::validation(format!("{field_name} must be valid hex")))?;
+
+    if decoded.len() != expected_bytes {
+        return Err(AppError::validation(format!(
+            "{field_name} must contain exactly {expected_bytes} bytes"
+        )));
+    }
+
+    Ok(())
 }
 
 impl FromRequestParts<AppState> for AuthenticatedUser {
@@ -385,8 +940,11 @@ impl FromRequestParts<AppState> for AuthenticatedUser {
             }
 
             Ok(Self {
-                user_id: Uuid::parse_str(&token_data.claims.sub)
+                principal_id: Uuid::parse_str(&token_data.claims.sub)
                     .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
+                owner_user_id: Uuid::parse_str(&token_data.claims.owner_user_id)
+                    .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
+                principal_kind: token_data.claims.principal_kind,
             })
         })();
 

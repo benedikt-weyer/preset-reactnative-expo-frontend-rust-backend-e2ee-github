@@ -5,9 +5,11 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub resource_id: Uuid,
-    pub kek_id: String,
+    #[sea_orm(primary_key, auto_increment = false)]
     pub user_id: Uuid,
+    pub kek_public_key: String,
     pub algorithm: String,
+    pub kem_ciphertext_hex: String,
     pub wrapped_dek_hex: String,
     pub nonce_hex: String,
     pub version: i32,

@@ -17,14 +17,14 @@ export type PersistedDerivedCredentials = {
 export type PersistedLinkedKek = {
   cryptKey: CryptKey;
   kekEpochVersion: number;
-  kekId: string;
+  kekPublicKey: string;
   saltHex: string;
 };
 
 type StoredLinkedKek = {
   cryptKeyHex?: string;
   kekEpochVersion?: number;
-  kekId?: string;
+  kekPublicKey?: string;
   saltHex?: string;
 };
 
@@ -172,30 +172,57 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
 
     if (
       !authSession ||
+      !authSession.currentPrincipal ||
       typeof authSession.token !== 'string' ||
       typeof authSession.refreshToken !== 'string' ||
       !Array.isArray(authSession.kekMetadatas) ||
+      !Array.isArray(authSession.linkedPrincipals) ||
       !authSession.user ||
       typeof authSession.user.id !== 'string' ||
       typeof authSession.user.email !== 'string' ||
+      typeof authSession.currentPrincipal.id !== 'string' ||
+      typeof authSession.currentPrincipal.kind !== 'string' ||
       authSession.kekMetadatas.some(
         (metadata) =>
           !metadata ||
           typeof metadata !== 'object' ||
-          typeof metadata.kekId !== 'string' ||
+          typeof metadata.kekPublicKey !== 'string' ||
           typeof metadata.kekEpochVersion !== 'number',
+      ) ||
+      authSession.linkedPrincipals.some(
+        (principal) =>
+          !principal ||
+          typeof principal !== 'object' ||
+          typeof principal.id !== 'string' ||
+          typeof principal.kind !== 'string' ||
+          typeof principal.latestKekPublicKey !== 'string' ||
+          typeof principal.latestKekEpochVersion !== 'number'
       )
     ) {
       return null;
     }
 
     return {
+      currentPrincipal: {
+        email: authSession.currentPrincipal.email?.trim().toLowerCase() ?? null,
+        id: authSession.currentPrincipal.id,
+        kind: authSession.currentPrincipal.kind,
+        username: authSession.currentPrincipal.username?.trim().toLowerCase() ?? null,
+      },
       kekMetadatas: authSession.kekMetadatas
         .map((metadata) => ({
           kekEpochVersion: metadata.kekEpochVersion,
-          kekId: metadata.kekId.trim(),
+          kekPublicKey: metadata.kekPublicKey.trim(),
         }))
-        .filter((metadata) => metadata.kekId),
+        .filter((metadata) => metadata.kekPublicKey),
+      linkedPrincipals: authSession.linkedPrincipals.map((principal) => ({
+        email: principal.email?.trim().toLowerCase() ?? null,
+        id: principal.id,
+        kind: principal.kind,
+        latestKekEpochVersion: principal.latestKekEpochVersion,
+        latestKekPublicKey: principal.latestKekPublicKey.trim(),
+        username: principal.username?.trim().toLowerCase() ?? null,
+      })),
       refreshToken: authSession.refreshToken,
       token: authSession.token,
       user: {
@@ -217,13 +244,13 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
 
     for (const linkedKek of linkedKeks) {
         const cryptKey = hexToBytes(linkedKek?.cryptKeyHex ?? '');
-        const kekId = linkedKek?.kekId?.trim();
+        const kekPublicKey = linkedKek?.kekPublicKey?.trim();
         const saltHex = linkedKek?.saltHex?.trim().toLowerCase();
         const kekEpochVersion = linkedKek?.kekEpochVersion;
 
         if (
           !cryptKey ||
-          !kekId ||
+          !kekPublicKey ||
           !saltHex ||
           typeof kekEpochVersion !== 'number' ||
           !Number.isInteger(kekEpochVersion)
@@ -234,7 +261,7 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
         normalizedLinkedKeks.push({
           cryptKey,
           kekEpochVersion,
-          kekId,
+          kekPublicKey,
           saltHex,
         });
       }
@@ -270,7 +297,7 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
         linkedKeks: credentials.linkedKeks.map((linkedKek) => ({
           cryptKeyHex: bytesToHex(linkedKek.cryptKey),
           kekEpochVersion: linkedKek.kekEpochVersion,
-          kekId: linkedKek.kekId.trim(),
+          kekPublicKey: linkedKek.kekPublicKey.trim(),
           saltHex: linkedKek.saltHex.trim().toLowerCase(),
         })),
       },
@@ -283,9 +310,23 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
     writeStoredPreferences({
       ...storedPreferences,
       authSession: {
+        currentPrincipal: {
+          email: session.currentPrincipal.email?.trim().toLowerCase() ?? null,
+          id: session.currentPrincipal.id,
+          kind: session.currentPrincipal.kind,
+          username: session.currentPrincipal.username?.trim().toLowerCase() ?? null,
+        },
         kekMetadatas: session.kekMetadatas.map((metadata) => ({
           kekEpochVersion: metadata.kekEpochVersion,
-          kekId: metadata.kekId.trim(),
+          kekPublicKey: metadata.kekPublicKey.trim(),
+        })),
+        linkedPrincipals: session.linkedPrincipals.map((principal) => ({
+          email: principal.email?.trim().toLowerCase() ?? null,
+          id: principal.id,
+          kind: principal.kind,
+          latestKekEpochVersion: principal.latestKekEpochVersion,
+          latestKekPublicKey: principal.latestKekPublicKey.trim(),
+          username: principal.username?.trim().toLowerCase() ?? null,
         })),
         refreshToken: session.refreshToken,
         token: session.token,

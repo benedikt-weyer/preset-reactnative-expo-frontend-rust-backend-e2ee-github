@@ -11,10 +11,11 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(Deks::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(Deks::ResourceId).uuid().not_null().primary_key())
-                    .col(ColumnDef::new(Deks::KekPublicKey).text().not_null())
+                    .col(ColumnDef::new(Deks::ResourceId).uuid().not_null())
                     .col(ColumnDef::new(Deks::UserId).uuid().not_null())
+                    .col(ColumnDef::new(Deks::KekPublicKey).text().not_null())
                     .col(ColumnDef::new(Deks::Algorithm).string().not_null())
+                    .col(ColumnDef::new(Deks::KemCiphertextHex).text().not_null())
                     .col(ColumnDef::new(Deks::WrappedDekHex).text().not_null())
                     .col(ColumnDef::new(Deks::NonceHex).string().not_null())
                     .col(ColumnDef::new(Deks::Version).integer().not_null())
@@ -37,12 +38,11 @@ impl MigrationTrait for Migration {
                             .to(KekMetadata::Table, KekMetadata::KekPublicKey)
                             .on_delete(ForeignKeyAction::Restrict),
                     )
-                    .foreign_key(
-                        ForeignKey::create()
-                            .name("fk-deks-user-id")
-                            .from(Deks::Table, Deks::UserId)
-                            .to(Users::Table, Users::Id)
-                            .on_delete(ForeignKeyAction::Cascade),
+                    .primary_key(
+                        Index::create()
+                            .name("pk-deks-resource-id-user-id")
+                            .col(Deks::ResourceId)
+                            .col(Deks::UserId),
                     )
                     .to_owned(),
             )
@@ -71,9 +71,10 @@ impl MigrationTrait for Migration {
 enum Deks {
     Table,
     ResourceId,
-    KekPublicKey,
     UserId,
+    KekPublicKey,
     Algorithm,
+    KemCiphertextHex,
     WrappedDekHex,
     NonceHex,
     Version,
@@ -85,10 +86,4 @@ enum Deks {
 enum KekMetadata {
     Table,
     KekPublicKey,
-}
-
-#[derive(DeriveIden)]
-enum Users {
-    Table,
-    Id,
 }

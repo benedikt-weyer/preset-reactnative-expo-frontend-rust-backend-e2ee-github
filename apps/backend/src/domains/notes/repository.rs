@@ -3,7 +3,7 @@ use sea_orm::{
     ActiveModelTrait, ColumnTrait, ConnectionTrait, EntityTrait, ModelTrait, QueryFilter,
     QueryOrder, Set,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 use crate::{
@@ -25,10 +25,17 @@ pub struct EncryptedBlob {
 
 pub struct WrappedDek {
     pub algorithm: String,
-    pub kek_id: String,
+    pub kek_public_key: String,
+    pub kem_ciphertext_hex: String,
     pub nonce_hex: String,
+    pub user_id: Uuid,
     pub version: i32,
     pub wrapped_dek_hex: String,
+}
+
+pub struct ResourceWrappedDek {
+    pub resource_id: Uuid,
+    pub wrapped_dek: WrappedDek,
 }
 
 pub struct StoredNote {
@@ -37,32 +44,40 @@ pub struct StoredNote {
 }
 
 pub struct NewNote {
-    pub encrypted_dek: WrappedDek,
+    pub encrypted_deks: Vec<WrappedDek>,
     pub encrypted_payload: EncryptedBlob,
-    pub user_id: Uuid,
+    pub owner_user_id: Uuid,
     pub created_at: DateTimeWithTimeZone,
     pub updated_at: DateTimeWithTimeZone,
 }
 
 pub struct NoteChanges {
-    pub encrypted_dek: WrappedDek,
+    pub encrypted_deks: Vec<WrappedDek>,
     pub encrypted_payload: EncryptedBlob,
     pub updated_at: DateTimeWithTimeZone,
 }
 
-pub async fn list_notes_for_user<C>(db: &C, user_id: Uuid) -> AppResult<Vec<StoredNote>>
+pub async fn list_notes_for_principal<C>(
+    db: &C,
+    owner_user_id: Uuid,
+    principal_id: Uuid,
+) -> AppResult<Vec<StoredNote>>
 where
     C: ConnectionTrait,
 {
     let notes = entity::Entity::find()
-        .filter(entity::Column::UserId.eq(user_id))
+        .filter(entity::Column::UserId.eq(owner_user_id))
         .order_by_desc(entity::Column::UpdatedAt)
         .all(db)
         .await
         .map_err(|_| AppError::internal("failed to query notes"))?;
 
-    let deks_by_resource_id =
-        load_deks_for_resources(db, user_id, notes.iter().map(|note| note.id).collect()).await?;
+    let deks_by_resource_id = load_deks_for_resources(
+        db,
+        principal_id,
+        notes.iter().map(|note| note.id).collect(),
+    )
+    .await?;
 
     notes
         .into_iter()
@@ -77,13 +92,18 @@ where
         .collect()
 }
 
-pub async fn find_note_by_id<C>(db: &C, user_id: Uuid, note_id: Uuid) -> AppResult<Option<StoredNote>>
+pub async fn find_note_by_id<C>(
+    db: &C,
+    owner_user_id: Uuid,
+    principal_id: Uuid,
+    note_id: Uuid,
+) -> AppResult<Option<StoredNote>>
 where
     C: ConnectionTrait,
 {
     let note = entity::Entity::find()
         .filter(entity::Column::Id.eq(note_id))
-        .filter(entity::Column::UserId.eq(user_id))
+        .filter(entity::Column::UserId.eq(owner_user_id))
         .one(db)
         .await
         .map_err(|_| AppError::internal("failed to query the note"))?;
@@ -94,7 +114,7 @@ where
 
     let dek = dek_entity::Entity::find()
         .filter(dek_entity::Column::ResourceId.eq(note_id))
-        .filter(dek_entity::Column::UserId.eq(user_id))
+        .filter(dek_entity::Column::UserId.eq(principal_id))
         .one(db)
         .await
         .map_err(|_| AppError::internal("failed to query the resource dek"))?
@@ -103,14 +123,18 @@ where
     Ok(Some(StoredNote { dek, note }))
 }
 
-pub async fn insert_note<C>(db: &C, new_note: NewNote) -> AppResult<StoredNote>
+pub async fn insert_note<C>(
+    db: &C,
+    current_principal_id: Uuid,
+    new_note: NewNote,
+) -> AppResult<StoredNote>
 where
     C: ConnectionTrait,
 {
     let note_id = Uuid::now_v7();
     let note = entity::ActiveModel {
         id: Set(note_id),
-        user_id: Set(new_note.user_id),
+        user_id: Set(new_note.owner_user_id),
         algorithm: Set(new_note.encrypted_payload.algorithm),
         ciphertext_hex: Set(new_note.encrypted_payload.ciphertext_hex),
         nonce_hex: Set(new_note.encrypted_payload.nonce_hex),
@@ -122,25 +146,30 @@ where
     .await
     .map_err(|_| AppError::internal("failed to create the note"))?;
 
-    let dek = dek_entity::ActiveModel {
-        resource_id: Set(note_id),
-        kek_id: Set(new_note.encrypted_dek.kek_id),
-        user_id: Set(new_note.user_id),
-        algorithm: Set(new_note.encrypted_dek.algorithm),
-        wrapped_dek_hex: Set(new_note.encrypted_dek.wrapped_dek_hex),
-        nonce_hex: Set(new_note.encrypted_dek.nonce_hex),
-        version: Set(new_note.encrypted_dek.version),
-        created_at: Set(new_note.created_at),
-        updated_at: Set(new_note.updated_at),
+    for encrypted_dek in new_note.encrypted_deks {
+        insert_wrapped_dek(
+            db,
+            note_id,
+            encrypted_dek,
+            new_note.created_at,
+            new_note.updated_at,
+        )
+        .await?;
     }
-    .insert(db)
-    .await
-    .map_err(|_| AppError::internal("failed to create the resource dek"))?;
+
+    let dek = find_wrapped_dek(db, note_id, current_principal_id)
+        .await?
+        .ok_or_else(|| AppError::internal("failed to query the resource dek"))?;
 
     Ok(StoredNote { dek, note })
 }
 
-pub async fn update_note<C>(db: &C, stored_note: StoredNote, changes: NoteChanges) -> AppResult<StoredNote>
+pub async fn update_note<C>(
+    db: &C,
+    current_principal_id: Uuid,
+    stored_note: StoredNote,
+    changes: NoteChanges,
+) -> AppResult<StoredNote>
 where
     C: ConnectionTrait,
 {
@@ -156,18 +185,22 @@ where
         .await
         .map_err(|_| AppError::internal("failed to update the note"))?;
 
-    let mut dek_active_model: dek_entity::ActiveModel = stored_note.dek.into();
-    dek_active_model.algorithm = Set(changes.encrypted_dek.algorithm);
-    dek_active_model.kek_id = Set(changes.encrypted_dek.kek_id);
-    dek_active_model.wrapped_dek_hex = Set(changes.encrypted_dek.wrapped_dek_hex);
-    dek_active_model.nonce_hex = Set(changes.encrypted_dek.nonce_hex);
-    dek_active_model.version = Set(changes.encrypted_dek.version);
-    dek_active_model.updated_at = Set(changes.updated_at);
+    delete_wrapped_deks_for_resource(db, note.id).await?;
 
-    let dek = dek_active_model
-        .update(db)
-        .await
-        .map_err(|_| AppError::internal("failed to update the resource dek"))?;
+    for encrypted_dek in changes.encrypted_deks {
+        insert_wrapped_dek(
+            db,
+            note.id,
+            encrypted_dek,
+            note.created_at,
+            changes.updated_at,
+        )
+        .await?;
+    }
+
+    let dek = find_wrapped_dek(db, note.id, current_principal_id)
+        .await?
+        .ok_or_else(|| AppError::internal("failed to query the resource dek"))?;
 
     Ok(StoredNote { dek, note })
 }
@@ -176,11 +209,7 @@ pub async fn delete_note<C>(db: &C, stored_note: StoredNote) -> AppResult<()>
 where
     C: ConnectionTrait,
 {
-    stored_note
-        .dek
-        .delete(db)
-        .await
-        .map_err(|_| AppError::internal("failed to delete the resource dek"))?;
+    delete_wrapped_deks_for_resource(db, stored_note.note.id).await?;
 
     stored_note
         .note
@@ -191,16 +220,16 @@ where
     Ok(())
 }
 
-pub async fn summarize_kek_usage_for_user<C>(
+pub async fn summarize_kek_usage_for_principal<C>(
     db: &C,
-    user_id: Uuid,
-    latest_kek_id: &str,
+    principal_id: Uuid,
+    latest_kek_public_key: &str,
 ) -> AppResult<KekUsageSummary>
 where
     C: ConnectionTrait,
 {
     let deks = dek_entity::Entity::find()
-        .filter(dek_entity::Column::UserId.eq(user_id))
+        .filter(dek_entity::Column::UserId.eq(principal_id))
         .all(db)
         .await
         .map_err(|_| AppError::internal("failed to query resource deks"))?;
@@ -208,7 +237,7 @@ where
     let total_deks = deks.len() as u64;
     let total_latest_kek_deks = deks
         .into_iter()
-        .filter(|dek| dek.kek_id == latest_kek_id)
+        .filter(|dek| dek.kek_public_key == latest_kek_public_key)
         .count() as u64;
 
     Ok(KekUsageSummary {
@@ -219,7 +248,7 @@ where
 
 async fn load_deks_for_resources<C>(
     db: &C,
-    user_id: Uuid,
+    principal_id: Uuid,
     resource_ids: Vec<Uuid>,
 ) -> AppResult<HashMap<Uuid, dek_entity::Model>>
 where
@@ -230,7 +259,7 @@ where
     }
 
     let deks = dek_entity::Entity::find()
-        .filter(dek_entity::Column::UserId.eq(user_id))
+        .filter(dek_entity::Column::UserId.eq(principal_id))
         .filter(dek_entity::Column::ResourceId.is_in(resource_ids))
         .all(db)
         .await
@@ -240,4 +269,158 @@ where
         .into_iter()
         .map(|dek| (dek.resource_id, dek))
         .collect())
+}
+
+pub async fn list_note_ids_for_owner<C>(db: &C, owner_user_id: Uuid) -> AppResult<Vec<Uuid>>
+where
+    C: ConnectionTrait,
+{
+    entity::Entity::find()
+        .filter(entity::Column::UserId.eq(owner_user_id))
+        .all(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query note ids"))
+        .map(|notes| notes.into_iter().map(|note| note.id).collect())
+}
+
+pub async fn list_missing_note_ids_for_principal<C>(
+    db: &C,
+    owner_user_id: Uuid,
+    principal_id: Uuid,
+) -> AppResult<Vec<Uuid>>
+where
+    C: ConnectionTrait,
+{
+    let note_ids = list_note_ids_for_owner(db, owner_user_id).await?;
+
+    if note_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let wrapped_resource_ids = dek_entity::Entity::find()
+        .filter(dek_entity::Column::UserId.eq(principal_id))
+        .filter(dek_entity::Column::ResourceId.is_in(note_ids.clone()))
+        .all(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query resource deks"))?
+        .into_iter()
+        .map(|dek| dek.resource_id)
+        .collect::<HashSet<_>>();
+
+    Ok(note_ids
+        .into_iter()
+        .filter(|note_id| !wrapped_resource_ids.contains(note_id))
+        .collect())
+}
+
+pub async fn upsert_wrapped_deks<C>(
+    db: &C,
+    wrapped_deks: Vec<ResourceWrappedDek>,
+    created_at: DateTimeWithTimeZone,
+    updated_at: DateTimeWithTimeZone,
+) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    for wrapped_dek in wrapped_deks {
+        save_wrapped_dek(
+            db,
+            wrapped_dek.resource_id,
+            wrapped_dek.wrapped_dek,
+            created_at,
+            updated_at,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+pub async fn find_wrapped_dek<C>(
+    db: &C,
+    resource_id: Uuid,
+    principal_id: Uuid,
+) -> AppResult<Option<dek_entity::Model>>
+where
+    C: ConnectionTrait,
+{
+    dek_entity::Entity::find_by_id((resource_id, principal_id))
+        .one(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query the resource dek"))
+}
+
+async fn insert_wrapped_dek<C>(
+    db: &C,
+    resource_id: Uuid,
+    wrapped_dek: WrappedDek,
+    created_at: DateTimeWithTimeZone,
+    updated_at: DateTimeWithTimeZone,
+) -> AppResult<dek_entity::Model>
+where
+    C: ConnectionTrait,
+{
+    dek_entity::ActiveModel {
+        resource_id: Set(resource_id),
+        user_id: Set(wrapped_dek.user_id),
+        kek_public_key: Set(wrapped_dek.kek_public_key),
+        algorithm: Set(wrapped_dek.algorithm),
+        kem_ciphertext_hex: Set(wrapped_dek.kem_ciphertext_hex),
+        wrapped_dek_hex: Set(wrapped_dek.wrapped_dek_hex),
+        nonce_hex: Set(wrapped_dek.nonce_hex),
+        version: Set(wrapped_dek.version),
+        created_at: Set(created_at),
+        updated_at: Set(updated_at),
+    }
+    .insert(db)
+    .await
+    .map_err(|_| AppError::internal("failed to create the resource dek"))
+}
+
+async fn save_wrapped_dek<C>(
+    db: &C,
+    resource_id: Uuid,
+    wrapped_dek: WrappedDek,
+    created_at: DateTimeWithTimeZone,
+    updated_at: DateTimeWithTimeZone,
+) -> AppResult<dek_entity::Model>
+where
+    C: ConnectionTrait,
+{
+    let Some(existing_dek) = find_wrapped_dek(db, resource_id, wrapped_dek.user_id).await? else {
+        return insert_wrapped_dek(db, resource_id, wrapped_dek, created_at, updated_at).await;
+    };
+
+    let mut active_model: dek_entity::ActiveModel = existing_dek.into();
+    active_model.kek_public_key = Set(wrapped_dek.kek_public_key);
+    active_model.algorithm = Set(wrapped_dek.algorithm);
+    active_model.kem_ciphertext_hex = Set(wrapped_dek.kem_ciphertext_hex);
+    active_model.wrapped_dek_hex = Set(wrapped_dek.wrapped_dek_hex);
+    active_model.nonce_hex = Set(wrapped_dek.nonce_hex);
+    active_model.version = Set(wrapped_dek.version);
+    active_model.updated_at = Set(updated_at);
+
+    active_model
+        .update(db)
+        .await
+        .map_err(|_| AppError::internal("failed to update the resource dek"))
+}
+
+async fn delete_wrapped_deks_for_resource<C>(db: &C, resource_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    let deks = dek_entity::Entity::find()
+        .filter(dek_entity::Column::ResourceId.eq(resource_id))
+        .all(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query resource deks"))?;
+
+    for dek in deks {
+        dek.delete(db)
+            .await
+            .map_err(|_| AppError::internal("failed to delete the resource dek"))?;
+    }
+
+    Ok(())
 }

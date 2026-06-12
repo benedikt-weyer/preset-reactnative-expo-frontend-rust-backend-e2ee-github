@@ -6,8 +6,15 @@ export type MlKemKeyPair = {
   publicKey: Uint8Array;
 };
 
+export type MlKemEncapsulation = {
+  cipherText: Uint8Array;
+  sharedSecret: Uint8Array;
+};
+
 export type OqsKekAdapter = {
+  decapsulate: (cipherText: Uint8Array, secretKey: Uint8Array) => Promise<Uint8Array>;
   deriveDeterministicKeyPair: (seed: Uint8Array) => Promise<MlKemKeyPair>;
+  encapsulate: (publicKey: Uint8Array) => Promise<MlKemEncapsulation>;
   ready: Promise<void>;
 };
 

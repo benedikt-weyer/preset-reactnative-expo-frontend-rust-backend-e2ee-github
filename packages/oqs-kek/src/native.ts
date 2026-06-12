@@ -1,3 +1,5 @@
+import { ml_kem768 } from '@noble/post-quantum/ml-kem.js';
+
 import { deriveDeterministicMlKem768KeyPair } from './deterministic';
 
 import type { MlKemKeyPair, OqsKekAdapter } from './index';
@@ -23,14 +25,28 @@ export function createNativeOqsKekAdapter(): OqsKekAdapter {
     );
 
     return {
+      decapsulate: async (cipherText, secretKey) => {
+        return new Uint8Array(ml_kem768.decapsulate(cipherText, secretKey));
+      },
       deriveDeterministicKeyPair: async (seed): Promise<MlKemKeyPair> => {
         return deriveDeterministicMlKem768KeyPair(seed);
+      },
+      encapsulate: async (publicKey) => {
+        const encapsulation = ml_kem768.encapsulate(publicKey);
+
+        return {
+          cipherText: new Uint8Array(encapsulation.cipherText),
+          sharedSecret: new Uint8Array(encapsulation.sharedSecret),
+        };
       },
       ready: Promise.resolve(),
     };
   }
 
   return {
+    async decapsulate(cipherText, secretKey) {
+      return new Uint8Array(ml_kem768.decapsulate(cipherText, secretKey));
+    },
     async deriveDeterministicKeyPair(seed) {
       const keyPair = await bridge.deriveDeterministicMlKem768KeyPair(bytesToHex(seed));
 
@@ -38,6 +54,14 @@ export function createNativeOqsKekAdapter(): OqsKekAdapter {
         algorithm: 'ml-kem-768',
         privateKey: hexStringToBytes(keyPair.privateKeyHex),
         publicKey: hexStringToBytes(keyPair.publicKeyHex),
+      };
+    },
+    async encapsulate(publicKey) {
+      const encapsulation = ml_kem768.encapsulate(publicKey);
+
+      return {
+        cipherText: new Uint8Array(encapsulation.cipherText),
+        sharedSecret: new Uint8Array(encapsulation.sharedSecret),
       };
     },
     ready: bridge.ready ?? Promise.resolve(),

@@ -7,11 +7,17 @@ import { createE2ee } from './core';
 const oqsKek = createWebOqsKekAdapter();
 
 const e2ee = createE2ee({
+  async decapsulateKek(cipherText, secretKey) {
+    return oqsKek.decapsulate(cipherText, secretKey);
+  },
   decrypt(ciphertext, nonce, key) {
     return sodium.crypto_secretbox_open_easy(ciphertext, nonce, key);
   },
   async deriveDeterministicKekKeyPair(seed) {
     return oqsKek.deriveDeterministicKeyPair(seed);
+  },
+  async encapsulateKek(publicKey) {
+    return oqsKek.encapsulate(publicKey);
   },
   derivePasswordHash(password, salt, keyLength) {
     return sodium.crypto_pwhash(
@@ -51,14 +57,17 @@ const e2ee = createE2ee({
 });
 
 export const {
+  createApiToken,
   createPasswordSalt,
   decryptString,
   decryptStringWithAsymmetricKek,
   decryptStringWithDek,
+  deriveApiTokenCredentials,
   deriveKekKeyPair,
   deriveCredentials,
   encryptString,
   encryptStringWithAsymmetricKek,
+  encryptStringWithAsymmetricKeks,
   encryptStringWithDek,
   normalizeEmail,
   rewrapAsymmetricEncryptedDek,
@@ -66,9 +75,11 @@ export const {
 } = e2ee;
 export type {
   CryptKey,
+  DerivedApiTokenCredentials,
   DerivedCredentials,
   EncryptedPayload,
   KekAsymmetricDekEncryptedPayload,
+  MultiRecipientKekAsymmetricDekEncryptedPayload,
   KekAsymmetricWrappedPayload,
   KekKeyPair,
   KekDekEncryptedPayload,

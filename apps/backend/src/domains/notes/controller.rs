@@ -27,7 +27,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveNoteRequest {
-    encrypted_dek: WrappedDekRequest,
+    encrypted_deks: Vec<WrappedDekRequest>,
     encrypted_payload: EncryptedBlobRequest,
 }
 
@@ -44,8 +44,10 @@ pub struct EncryptedBlobRequest {
 #[serde(rename_all = "camelCase")]
 pub struct WrappedDekRequest {
     algorithm: String,
-    kek_id: String,
+    kem_ciphertext_hex: String,
+    kek_public_key: String,
     nonce_hex: String,
+    user_id: Uuid,
     version: i32,
     wrapped_dek_hex: String,
 }
@@ -73,8 +75,10 @@ pub struct EncryptedBlobResponse {
 #[serde(rename_all = "camelCase")]
 pub struct WrappedDekResponse {
     algorithm: String,
-    kek_id: String,
+    kem_ciphertext_hex: String,
+    kek_public_key: String,
     nonce_hex: String,
+    user_id: Uuid,
     version: i32,
     wrapped_dek_hex: String,
 }
@@ -132,7 +136,11 @@ pub async fn delete_note(
 
 fn map_save_command(payload: SaveNoteRequest) -> service::SaveNoteCommand {
     service::SaveNoteCommand {
-        encrypted_dek: map_wrapped_dek_request(payload.encrypted_dek),
+        encrypted_deks: payload
+            .encrypted_deks
+            .into_iter()
+            .map(map_wrapped_dek_request)
+            .collect(),
         encrypted_payload: map_blob_request(payload.encrypted_payload),
     }
 }
@@ -140,8 +148,10 @@ fn map_save_command(payload: SaveNoteRequest) -> service::SaveNoteCommand {
 fn map_wrapped_dek_request(payload: WrappedDekRequest) -> service::SaveWrappedDekCommand {
     service::SaveWrappedDekCommand {
         algorithm: payload.algorithm,
-        kek_id: payload.kek_id,
+        kem_ciphertext_hex: payload.kem_ciphertext_hex,
+        kek_public_key: payload.kek_public_key,
         nonce_hex: payload.nonce_hex,
+        user_id: payload.user_id,
         version: payload.version,
         wrapped_dek_hex: payload.wrapped_dek_hex,
     }
@@ -169,8 +179,10 @@ fn map_note_response(note: service::StoredNote) -> NoteResponse {
 fn map_wrapped_dek_response(blob: service::StoredWrappedDek) -> WrappedDekResponse {
     WrappedDekResponse {
         algorithm: blob.algorithm,
-        kek_id: blob.kek_id,
+        kem_ciphertext_hex: blob.kem_ciphertext_hex,
+        kek_public_key: blob.kek_public_key,
         nonce_hex: blob.nonce_hex,
+        user_id: blob.user_id,
         version: blob.version,
         wrapped_dek_hex: blob.wrapped_dek_hex,
     }

@@ -15,18 +15,26 @@ The current backend stores these user fields:
 For each encrypted resource row, the backend also stores:
 
 - the encrypted resource payload in its own table, for example `notes`
-- one wrapped DEK in the `deks` table
-- `kek_id` on the DEK row, which links the wrapped DEK to one public-key-based KEK epoch
+- one or more wrapped DEKs in the `deks` table
+- `kek_public_key` on each DEK row, which links the wrapped DEK to one public-key-based KEK epoch
 - `resource_id` on the DEK row, which points at the encrypted row id
-- `user_id` on the DEK row, which binds the wrapped DEK to the owning user
+- `user_id` on the DEK row, which binds the wrapped DEK to one linked principal recipient
+- `kem_ciphertext_hex` on the DEK row, which stores the ML-KEM encapsulation ciphertext for that recipient
 - `wrapped_dek_hex` on the DEK row, which stores the wrapped DEK ciphertext
-- separate nonces for the encrypted payload and the wrapped DEK
+- separate nonces for the encrypted payload and each wrapped DEK
 
 For each active KEK, the backend also stores one `kek_metadata` row with:
 
-- `kek_id`, supplied by the client as the KEK public key
-- `kek_epoch_version`, incremented per user for rotations
-- `user_id`, which scopes that KEK metadata row to one account
+- `kek_public_key`, supplied by the client as the KEK public key
+- `kek_epoch_version`, incremented per principal for rotations
+- `user_id`, which scopes that KEK metadata row to one principal
+
+For linked-principal management, the backend also stores:
+
+- owner users in `users`
+- API users in `api_users`
+- one encrypted API-user label plus its wrapped DEKs
+- API-user provisioning progress, which is derived from missing note DEK rows for that API user
 
 For migration bookkeeping, the backend can also compute:
 
@@ -44,10 +52,12 @@ The backend does not store:
 
 The client stores locally:
 
-- linked KEK keypairs keyed by `kek_id`
+- linked KEK keypairs keyed by `kek_public_key`
+- the latest linked-principal metadata returned by the backend
 - the latest known `kek_epoch_version` values returned by the backend
 - any older active KEKs that were relinked with older passwords during login
 - temporary client-side migration progress while rewrapping DEKs to a new epoch
+- temporary API-user provisioning progress while creating missing recipient wraps
 
 ```plantuml format="svg_inline" alt="Backend storage model" title="Backend storage model"
 @startuml
@@ -63,10 +73,19 @@ entity "users" as users {
 }
 
 entity "kek_metadata" as kek_metadata {
-  * kek_id
+  * kek_public_key
   --
   user_id
   kek_epoch_version
+}
+
+entity "api_users" as api_users {
+  * id
+  --
+  user_id
+  username
+  auth_key_hash
+  label_ciphertext
 }
 
 entity "notes" as notes {
@@ -78,20 +97,21 @@ entity "notes" as notes {
 }
 
 entity "deks" as deks {
-  * id
+  * resource_id
+  * user_id
   --
-  user_id
-  resource_id
-  kek_id
+  kek_public_key
+  kem_ciphertext_hex
   wrapped_dek_hex
   nonce_hex
 }
 
 users ||--o{ kek_metadata
 users ||--o{ notes
-users ||--o{ deks
+users ||--o{ api_users
 notes ||--|| deks : resource_id
-kek_metadata ||--o{ deks : kek_id
+kek_metadata ||--o{ deks : kek_public_key
+api_users ||--o{ deks : user_id
 @enduml
 ```
 
@@ -102,13 +122,19 @@ kek_metadata ||--o{ deks : kek_id
 | `POST /api/auth/salt` | return the stored per-user salt plus active KEK metadata for login |
 | `POST /api/auth/register` | create a user from `email + authKey + saltHex` and return the initial KEK metadata |
 | `POST /api/auth/login` | verify the derived auth key, issue tokens, and return active KEK metadata |
+| `POST /api/auth/api-users/login` | verify an API user's derived auth key and issue principal-aware tokens |
 | `POST /api/auth/rotate-password` | update the stored auth-key hash and create the next KEK epoch |
+| `GET /api/auth/linked-principals` | return the owner plus linked principals with their latest KEK public keys |
 | `GET /api/auth/kek-status` | report whether all DEKs for the user already use the newest KEK epoch |
-| `GET /api/notes` | return encrypted notes plus wrapped DEKs for the authenticated user |
-| `POST /api/notes` | create an encrypted note row and its wrapped DEK row |
-| `GET /api/notes/{note_id}` | return one encrypted note and wrapped DEK |
-| `PUT /api/notes/{note_id}` | replace the encrypted note payload and wrapped DEK |
-| `DELETE /api/notes/{note_id}` | delete the encrypted note and its wrapped DEK |
+| `GET /api/auth/api-users` | list API users for the owner account, including label ciphertext and provisioning state |
+| `POST /api/auth/api-users` | create an API user and store the initial label ciphertext plus wrapped label DEKs |
+| `GET /api/auth/api-users/{api_user_id}` | load one API user and its provisioning state |
+| `POST /api/auth/api-users/{api_user_id}/provision` | append wrapped DEKs for notes that still need that API user recipient |
+| `GET /api/notes` | return encrypted notes plus the wrapped DEK for the authenticated principal |
+| `POST /api/notes` | create an encrypted note row and its wrapped DEK rows |
+| `GET /api/notes/{note_id}` | return one encrypted note and the current principal wrapped DEK |
+| `PUT /api/notes/{note_id}` | replace the encrypted note payload and the full wrapped DEK recipient set |
+| `DELETE /api/notes/{note_id}` | delete the encrypted note and all of its wrapped DEK rows |
 
 ```plantuml format="svg_inline" alt="Route coverage by lifecycle step" title="Route coverage by lifecycle step"
 @startuml
@@ -136,7 +162,9 @@ stop
 - Existing accounts and encrypted note rows created under older schemes are not compatible with the current flow.
 - The email is an identifier now, not an input to the password KDF.
 - Every encrypted resource row gets its own client-generated random DEK.
-- Every wrapped DEK is linked to a specific public-key `kek_id`, which allows password rotations without reusing a single long-lived KEK identifier.
+- Every wrapped DEK is linked to a specific public-key `kek_public_key`, which allows password rotations without reusing a single long-lived KEK identifier.
+- Every wrapped DEK also needs a `kem_ciphertext_hex`; `wrapped_dek_hex` alone is not enough to reconstruct the shared secret during decrypt.
+- A note update replaces the entire wrapped-DEK recipient set, so clients must write all current recipients together.
 - Clients must keep older linked KEKs locally if older ciphertext rows are still active.
 - Rotating the password is not finished until the client verifies that every DEK row was rewrapped onto the newest KEK epoch.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

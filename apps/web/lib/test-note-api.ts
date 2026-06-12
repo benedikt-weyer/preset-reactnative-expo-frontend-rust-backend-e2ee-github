@@ -10,7 +10,7 @@ type NoteByIdRequest = AuthenticatedRequest & {
 };
 
 type SaveNoteRequest = AuthenticatedRequest & {
-  payload: KekAsymmetricDekEncryptedPayload;
+  payload: SaveNotePayload;
 };
 
 type UpdateNoteRequest = SaveNoteRequest & {
@@ -21,6 +21,11 @@ export type NoteResponse = KekAsymmetricDekEncryptedPayload & {
   createdAt: string;
   id: string;
   updatedAt: string;
+};
+
+export type SaveNotePayload = {
+  encryptedDeks: Array<KekAsymmetricDekEncryptedPayload['encryptedDek'] & { userId: string }>;
+  encryptedPayload: KekAsymmetricDekEncryptedPayload['encryptedPayload'];
 };
 
 export async function fetchNotes(request: AuthenticatedRequest) {
@@ -160,13 +165,17 @@ function isWrappedDekPayload(value: unknown): value is KekAsymmetricDekEncrypted
   return !!value &&
     typeof value === 'object' &&
     'algorithm' in value &&
-    'kekId' in value &&
+    'kemCiphertextHex' in value &&
+    'kekPublicKey' in value &&
     'nonceHex' in value &&
+    'userId' in value &&
     'version' in value &&
     'wrappedDekHex' in value &&
     typeof value.algorithm === 'string' &&
-    typeof value.kekId === 'string' &&
+    typeof value.kemCiphertextHex === 'string' &&
+    typeof value.kekPublicKey === 'string' &&
     typeof value.nonceHex === 'string' &&
+    typeof value.userId === 'string' &&
     typeof value.version === 'number' &&
     typeof value.wrappedDekHex === 'string';
 }

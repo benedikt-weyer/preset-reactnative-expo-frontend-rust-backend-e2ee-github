@@ -25,13 +25,6 @@ impl MigrationTrait for Migration {
                             .not_null()
                             .default(Expr::current_timestamp()),
                     )
-                    .foreign_key(
-                        ForeignKey::create()
-                            .name("fk-kek-metadata-user-id")
-                            .from(KekMetadata::Table, KekMetadata::UserId)
-                            .to(Users::Table, Users::Id)
-                            .on_delete(ForeignKeyAction::Cascade),
-                    )
                     .to_owned(),
             )
             .await?;
@@ -63,10 +56,4 @@ enum KekMetadata {
     UserId,
     KekEpochVersion,
     CreatedAt,
-}
-
-#[derive(DeriveIden)]
-enum Users {
-    Table,
-    Id,
 }

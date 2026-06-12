@@ -181,7 +181,7 @@ describe('encryptStringWithDek/decryptStringWithDek', () => {
     const payload = encryptStringWithDek('secret note', cryptKey, 'kek-current');
 
     expect(payload.encryptedDek.algorithm).toBe('xsalsa20-poly1305');
-    expect(payload.encryptedDek.kekId).toBe('kek-current');
+    expect(payload.encryptedDek.kekPublicKey).toBe('kek-current');
     expect(payload.encryptedDek.version).toBe(1);
     expect(payload.encryptedDek.wrappedDekHex).toMatch(/^[0-9a-f]+$/);
     expect(payload.encryptedPayload.algorithm).toBe('xsalsa20-poly1305');
@@ -239,7 +239,7 @@ describe('encryptStringWithDek/decryptStringWithDek', () => {
       'kek-v2',
     );
 
-    expect(rewrappedDek.kekId).toBe('kek-v2');
+    expect(rewrappedDek.kekPublicKey).toBe('kek-v2');
     expect(rewrappedDek.wrappedDekHex).not.toBe(payload.encryptedDek.wrappedDekHex);
     expect(
       decryptStringWithDek(

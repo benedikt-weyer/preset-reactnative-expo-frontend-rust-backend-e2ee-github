@@ -4,11 +4,13 @@ import { useEffect, useState } from 'react';
 import { ArrowRight, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react';
 
 import {
+  createApiToken,
   createPasswordSalt,
   decryptStringWithAsymmetricKek,
+  deriveApiTokenCredentials,
   deriveKekKeyPair,
   deriveCredentials,
-  encryptStringWithAsymmetricKek,
+  encryptStringWithAsymmetricKeks,
   normalizeEmail,
   rewrapAsymmetricEncryptedDek,
   type CryptKey,
@@ -17,14 +19,21 @@ import {
 
 import { Button } from '@/components/ui/button';
 import {
+  createApiUserRequest,
+  fetchApiUser,
+  fetchApiUsers,
   fetchKekMigrationStatus,
+  fetchLinkedPrincipals,
   fetchPasswordSalt,
   loginRequest,
   rotatePasswordRequest,
   registerRequest,
+  provisionApiUserDeksRequest,
+  type ApiUserResponse,
   type AuthApiResponse,
   type KekMigrationStatusResponse,
   type KekMetadata,
+  type LinkedPrincipal,
 } from '@/lib/auth-api';
 import {
   createNote,
@@ -61,10 +70,19 @@ type MigrationProgress = {
   total: number;
 };
 
+type ApiUserView = ApiUserResponse & {
+  label: string;
+};
+
+type ApiUserProvisionProgress = MigrationProgress & {
+  apiUserId: string;
+  username: string;
+};
+
 const featureNotes = [
   'The typed password stays in the browser and derives two keys locally.',
   'The backend sees only the derived auth key plus the per-account salt.',
-  'Each note stores one encrypted document plus one wrapped per-resource DEK addressed by the KEK public key.',
+  'Each note stores one encrypted document plus one wrapped DEK per linked principal addressed by that principal\'s KEK public key.',
 ];
 
 export function AuthExperience() {
@@ -76,6 +94,9 @@ export function AuthExperience() {
   const [noteTitle, setNoteTitle] = useState('');
   const [noteContent, setNoteContent] = useState('');
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
+  const [apiUserLabel, setApiUserLabel] = useState('');
+  const [apiUsers, setApiUsers] = useState<ApiUserView[]>([]);
+  const [latestApiToken, setLatestApiToken] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [session, setSession] = useState<AuthApiResponse | null>(null);
   const [linkedKeks, setLinkedKeks] = useState<PersistedLinkedKek[]>([]);
@@ -86,9 +107,11 @@ export function AuthExperience() {
   const [kekMigrationStatus, setKekMigrationStatus] =
     useState<KekMigrationStatusResponse | null>(null);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
+  const [apiUserProgress, setApiUserProgress] = useState<ApiUserProvisionProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [isHydrated, setIsHydrated] = useState(false);
+  const [isCreatingApiUser, setIsCreatingApiUser] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -116,6 +139,7 @@ export function AuthExperience() {
     }
 
     if (!session || linkedKeks.length === 0) {
+      setApiUsers([]);
       setNotes([]);
       applySelectedNote(null);
       setKekMigrationStatus(null);
@@ -128,11 +152,20 @@ export function AuthExperience() {
       token: session.token,
       trimmedBackendUrl: backendUrl.trim(),
     });
+    if (session.currentPrincipal.kind === 'user') {
+      void loadApiUsers({
+        linkedKeks,
+        token: session.token,
+        trimmedBackendUrl: backendUrl.trim(),
+      });
+    } else {
+      setApiUsers([]);
+    }
     void refreshKekMigrationStatus(session, backendUrl.trim());
   }, [activeKekId, backendUrl, isHydrated, linkedKeks, session]);
 
   const missingMigrationKeks = session
-    ? session.kekMetadatas.filter((metadata) => !findLinkedKek(linkedKeks, metadata.kekId))
+    ? session.kekMetadatas.filter((metadata) => !findLinkedKek(linkedKeks, metadata.kekPublicKey))
     : [];
   const needsMigration =
     !!session &&
@@ -166,8 +199,8 @@ export function AuthExperience() {
         mode === 'login'
           ? sortedKekMetadatas.slice(1).filter(
               (metadata) =>
-                !findLinkedKek(persistedLinkedKeks, metadata.kekId) &&
-                !olderPasswords[metadata.kekId]?.trim(),
+                !findLinkedKek(persistedLinkedKeks, metadata.kekPublicKey) &&
+                !olderPasswords[metadata.kekPublicKey]?.trim(),
             )
           : [];
 
@@ -191,7 +224,7 @@ export function AuthExperience() {
               authKey: credentials.authKey,
               baseUrl: trimmedBackendUrl,
               email: credentials.email,
-              kekId: registerKekKeyPair!.kekId,
+              kekPublicKey: registerKekKeyPair!.kekPublicKey,
               saltHex,
             });
       const responseKekMetadatas = sortKekMetadatas(response.kekMetadatas);
@@ -202,23 +235,23 @@ export function AuthExperience() {
       }
 
       const retainedLinkedKeks = persistedLinkedKeks.filter((linkedKek) =>
-        responseKekMetadatas.some((metadata) => metadata.kekId === linkedKek.kekId),
+        responseKekMetadatas.some((metadata) => metadata.kekPublicKey === linkedKek.kekPublicKey),
       );
       const nextDerivedLinkedKeks: PersistedLinkedKek[] = [
         {
           cryptKey: credentials.cryptKey,
           kekEpochVersion: latestKekMetadata.kekEpochVersion,
-          kekId: latestKekMetadata.kekId,
+          kekPublicKey: latestKekMetadata.kekPublicKey,
           saltHex,
         },
       ];
 
       for (const metadata of responseKekMetadatas.slice(1)) {
-        if (findLinkedKek(retainedLinkedKeks, metadata.kekId)) {
+        if (findLinkedKek(retainedLinkedKeks, metadata.kekPublicKey)) {
           continue;
         }
 
-        const olderPassword = olderPasswords[metadata.kekId]?.trim();
+        const olderPassword = olderPasswords[metadata.kekPublicKey]?.trim();
 
         if (!olderPassword) {
           continue;
@@ -229,7 +262,7 @@ export function AuthExperience() {
         nextDerivedLinkedKeks.push({
           cryptKey: olderCredentials.cryptKey,
           kekEpochVersion: metadata.kekEpochVersion,
-          kekId: metadata.kekId,
+          kekPublicKey: metadata.kekPublicKey,
           saltHex,
         });
       }
@@ -241,7 +274,7 @@ export function AuthExperience() {
 
       setSession(response);
       setLinkedKeks(nextLinkedKeks);
-      setActiveKekId(latestKekMetadata.kekId);
+      setActiveKekId(latestKekMetadata.kekPublicKey);
       setEmail(credentials.email);
       setPassword('');
       setOlderPasswords({});
@@ -276,6 +309,9 @@ export function AuthExperience() {
   function handleSignOut() {
     setSession(null);
     setActiveKekId(null);
+    setApiUserLabel('');
+    setApiUsers([]);
+    setLatestApiToken(null);
     setPassword('');
     setNextPassword('');
     setOlderPasswords({});
@@ -321,7 +357,7 @@ export function AuthExperience() {
       const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
       const response = await rotatePasswordRequest({
         baseUrl: backendUrl,
-        kekId: kekKeyPair.kekId,
+        kekPublicKey: kekKeyPair.kekPublicKey,
         newAuthKey: credentials.authKey,
         token: session.token,
       });
@@ -336,14 +372,14 @@ export function AuthExperience() {
         {
           cryptKey: credentials.cryptKey,
           kekEpochVersion: latestKekMetadata.kekEpochVersion,
-          kekId: latestKekMetadata.kekId,
+          kekPublicKey: latestKekMetadata.kekPublicKey,
           saltHex,
         },
       ]);
 
       setSession(response);
       setLinkedKeks(nextLinkedKeks);
-      setActiveKekId(latestKekMetadata.kekId);
+      setActiveKekId(latestKekMetadata.kekPublicKey);
       setNextPassword('');
       localStorageAuthPersistence.writeAuthSession(response);
       localStorageAuthPersistence.writeDerivedCredentials({
@@ -399,17 +435,21 @@ export function AuthExperience() {
       baseLinkedKeks,
       email: nextSession.user.email,
       missingMetadatas: nextSession.kekMetadatas.filter(
-        (metadata) => !findLinkedKek(baseLinkedKeks, metadata.kekId),
+        (metadata) => !findLinkedKek(baseLinkedKeks, metadata.kekPublicKey),
       ),
       passwordsByKekId: migrationPasswords,
     });
-    const latestLinkedKek = requireLinkedKek(workingLinkedKeks, latestKekMetadata.kekId);
+    const latestLinkedKek = requireLinkedKek(workingLinkedKeks, latestKekMetadata.kekPublicKey);
+    const currentLinkedPrincipals = await fetchLinkedPrincipals({
+      baseUrl: backendUrl,
+      token: nextSession.token,
+    });
     const remoteNotes = await fetchNotes({
       baseUrl: backendUrl,
       token: nextSession.token,
     });
     const notesToRewrap = remoteNotes.filter(
-      (note) => note.encryptedDek.kekId !== latestLinkedKek.kekId,
+      (note) => note.encryptedDek.kekPublicKey !== latestLinkedKek.kekPublicKey,
     );
 
     setIsMigrating(true);
@@ -421,11 +461,11 @@ export function AuthExperience() {
     try {
       for (let index = 0; index < notesToRewrap.length; index += 1) {
         const note = notesToRewrap[index];
-        const noteLinkedKek = findLinkedKek(workingLinkedKeks, note.encryptedDek.kekId);
+        const noteLinkedKek = findLinkedKek(workingLinkedKeks, note.encryptedDek.kekPublicKey);
 
         if (!noteLinkedKek) {
           throw new Error(
-            `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Provide the matching older password first.`,
+            `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekPublicKey}. Provide the matching older password first.`,
           );
         }
 
@@ -433,10 +473,15 @@ export function AuthExperience() {
           baseUrl: backendUrl,
           noteId: note.id,
           payload: {
-            encryptedDek: await rewrapAsymmetricEncryptedDek(
-              note,
-              noteLinkedKek.cryptKey,
-              latestLinkedKek.cryptKey,
+            encryptedDeks: await Promise.all(
+              currentLinkedPrincipals.map(async (principal) => ({
+                ...(await rewrapAsymmetricEncryptedDek(
+                  note,
+                  noteLinkedKek.cryptKey,
+                  principal.latestKekPublicKey,
+                )),
+                userId: principal.id,
+              })),
             ),
             encryptedPayload: note.encryptedPayload,
           },
@@ -464,6 +509,11 @@ export function AuthExperience() {
 
       await loadNotes({
         emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
+        linkedKeks: workingLinkedKeks,
+        token: nextSession.token,
+        trimmedBackendUrl: backendUrl.trim(),
+      });
+      await loadApiUsers({
         linkedKeks: workingLinkedKeks,
         token: nextSession.token,
         trimmedBackendUrl: backendUrl.trim(),
@@ -519,6 +569,30 @@ export function AuthExperience() {
     }
   }
 
+  async function loadApiUsers({
+    linkedKeks,
+    token,
+    trimmedBackendUrl,
+  }: {
+    linkedKeks: PersistedLinkedKek[];
+    token: string;
+    trimmedBackendUrl: string;
+  }) {
+    try {
+      const remoteApiUsers = await fetchApiUsers({
+        baseUrl: trimmedBackendUrl,
+        token,
+      });
+      const decryptedApiUsers = await Promise.all(
+        remoteApiUsers.map((apiUser) => decryptApiUserRecord(apiUser, linkedKeks)),
+      );
+
+      setApiUsers(decryptedApiUsers);
+    } catch {
+      setApiUsers([]);
+    }
+  }
+
   function applySelectedNote(note: DecryptedNote | null) {
     setSelectedNoteId(note?.id ?? null);
     setNoteTitle(note?.title ?? '');
@@ -543,28 +617,45 @@ export function AuthExperience() {
       return;
     }
 
-    const activeLinkedKek = requireLinkedKek(linkedKeks, activeKekId);
-
     setErrorMessage(null);
 
     try {
-      const encryptedPayload = await encryptStringWithAsymmetricKek(
+      const currentLinkedPrincipals = await fetchLinkedPrincipals({
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+      const encryptedPayload = await encryptStringWithAsymmetricKeks(
         serializeNoteDocument({
           content: noteContent,
           title: noteTitle,
         }),
-        activeLinkedKek.cryptKey,
+        currentLinkedPrincipals.map((principal) => principal.latestKekPublicKey),
       );
+      const payload = {
+        encryptedDeks: encryptedPayload.encryptedDeks.map((encryptedDek, index) => {
+          const principal = currentLinkedPrincipals[index];
+
+          if (!principal) {
+            throw new Error('The backend returned an incomplete linked principal list.');
+          }
+
+          return {
+            ...encryptedDek,
+            userId: principal.id,
+          };
+        }),
+        encryptedPayload: encryptedPayload.encryptedPayload,
+      };
       const savedNote = selectedNoteId
         ? await updateNote({
             baseUrl: backendUrl,
             noteId: selectedNoteId,
-            payload: encryptedPayload,
+            payload,
             token: session.token,
           })
         : await createNote({
             baseUrl: backendUrl,
-            payload: encryptedPayload,
+            payload,
             token: session.token,
           });
 
@@ -613,6 +704,169 @@ export function AuthExperience() {
       setErrorMessage(
         error instanceof Error ? error.message : 'Unable to delete the encrypted note.',
       );
+    }
+  }
+
+  async function handleCreateApiUser() {
+    if (!session || session.currentPrincipal.kind !== 'user') {
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsCreatingApiUser(true);
+
+    try {
+      const currentLinkedPrincipals = await fetchLinkedPrincipals({
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+      const ownerPrincipal = currentLinkedPrincipals.find((principal) => principal.id === session.user.id);
+
+      if (!ownerPrincipal) {
+        throw new Error('The backend did not return the owner KEK metadata.');
+      }
+
+      const apiUserId = crypto.randomUUID();
+      const apiToken = await createApiToken();
+      const apiTokenCredentials = await deriveApiTokenCredentials(apiToken);
+      const encryptedLabel = await encryptStringWithAsymmetricKeks(apiUserLabel, [
+        ownerPrincipal.latestKekPublicKey,
+        apiTokenCredentials.kekKeyPair.kekPublicKey,
+      ]);
+      const createdApiUser = await createApiUserRequest({
+        authKey: apiTokenCredentials.authKey,
+        baseUrl: backendUrl,
+        encryptedLabel: encryptedLabel.encryptedPayload,
+        encryptedLabelDeks: encryptedLabel.encryptedDeks.map((encryptedDek, index) => ({
+          ...encryptedDek,
+          userId: index === 0 ? ownerPrincipal.id : apiUserId,
+        })),
+        id: apiUserId,
+        kekPublicKey: apiTokenCredentials.kekKeyPair.kekPublicKey,
+        token: session.token,
+      });
+
+      setLatestApiToken(apiToken);
+      setApiUserLabel('');
+      await continueApiUserProvisioning(createdApiUser, {
+        linkedKeks,
+        nextSession: session,
+      });
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to create the api user.',
+      );
+    } finally {
+      setIsCreatingApiUser(false);
+    }
+  }
+
+  async function handleResumeApiUser(apiUserId: string) {
+    if (!session || session.currentPrincipal.kind !== 'user') {
+      return;
+    }
+
+    setErrorMessage(null);
+
+    try {
+      const apiUser = await fetchApiUser({
+        apiUserId,
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+
+      await continueApiUserProvisioning(apiUser, {
+        linkedKeks,
+        nextSession: session,
+      });
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to resume api user provisioning.',
+      );
+    }
+  }
+
+  async function continueApiUserProvisioning(
+    apiUser: ApiUserResponse,
+    {
+      linkedKeks,
+      nextSession,
+    }: {
+      linkedKeks: PersistedLinkedKek[];
+      nextSession: AuthApiResponse;
+    },
+  ) {
+    const remoteNotes = await fetchNotes({
+      baseUrl: backendUrl,
+      token: nextSession.token,
+    });
+    const notesById = new Map(remoteNotes.map((note) => [note.id, note]));
+
+    setApiUserProgress({
+      apiUserId: apiUser.id,
+      completed: apiUser.provisioning.completedResourceCount,
+      total: apiUser.provisioning.totalResourceCount,
+      username: apiUser.username,
+    });
+
+    let latestApiUser = apiUser;
+
+    try {
+      for (let index = 0; index < apiUser.provisioning.pendingNoteIds.length; index += 1) {
+        const noteId = apiUser.provisioning.pendingNoteIds[index]!;
+        const note = notesById.get(noteId);
+
+        if (!note) {
+          throw new Error('A note required for api user provisioning is missing from the backend.');
+        }
+
+        const noteLinkedKek = findLinkedKek(linkedKeks, note.encryptedDek.kekPublicKey);
+
+        if (!noteLinkedKek) {
+          throw new Error(
+            `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekPublicKey}. Log in again and provide the older password for that KEK.`,
+          );
+        }
+
+        latestApiUser = await provisionApiUserDeksRequest({
+          apiUserId: apiUser.id,
+          baseUrl: backendUrl,
+          token: nextSession.token,
+          wrappedDeks: [
+            {
+              resourceId: note.id,
+              wrappedDek: {
+                ...(await rewrapAsymmetricEncryptedDek(
+                  note,
+                  noteLinkedKek.cryptKey,
+                  latestApiUser.latestKekPublicKey,
+                )),
+                userId: latestApiUser.id,
+              },
+            },
+          ],
+        });
+
+        setApiUserProgress({
+          apiUserId: latestApiUser.id,
+          completed: latestApiUser.provisioning.completedResourceCount,
+          total: latestApiUser.provisioning.totalResourceCount,
+          username: latestApiUser.username,
+        });
+      }
+
+      await loadApiUsers({
+        linkedKeks,
+        token: nextSession.token,
+        trimmedBackendUrl: backendUrl.trim(),
+      });
+      setStatusMessage(
+        latestApiUser.provisioning.pendingResourceCount === 0
+          ? `Provisioned api user ${latestApiUser.username}.`
+          : `Provisioning for api user ${latestApiUser.username} is still pending.`,
+      );
+    } finally {
+      setApiUserProgress(null);
     }
   }
 
@@ -721,17 +975,17 @@ export function AuthExperience() {
                   {missingMigrationKeks.map((metadata) => (
                     <LabeledInput
                       autoComplete="current-password"
-                      key={metadata.kekId}
+                      key={metadata.kekPublicKey}
                       label={`Missing password for epoch ${metadata.kekEpochVersion}`}
                       onChange={(value) =>
                         setMigrationPasswords((currentPasswords) => ({
                           ...currentPasswords,
-                          [metadata.kekId]: value,
+                          [metadata.kekPublicKey]: value,
                         }))
                       }
                       placeholder="Type the password for this older KEK epoch"
                       type="password"
-                      value={migrationPasswords[metadata.kekId] ?? ''}
+                      value={migrationPasswords[metadata.kekPublicKey] ?? ''}
                     />
                   ))}
                   {migrationProgress ? (
@@ -760,6 +1014,111 @@ export function AuthExperience() {
                       Continue migration
                     </Button>
                   ) : null}
+                </div>
+              ) : null}
+
+              {session.currentPrincipal.kind === 'user' ? (
+                <div className="grid gap-4 rounded-[1.6rem] border border-border/70 bg-background/80 p-5">
+                  <div className="flex items-center gap-3 text-foreground">
+                    <ShieldCheck className="size-5 text-primary" />
+                    <p className="text-sm uppercase tracking-[0.22em] text-muted-foreground">
+                      API users
+                    </p>
+                  </div>
+                  <p className="text-sm leading-6 text-foreground/75">
+                    Generate a dedicated api token locally, store its derived auth key and KEK on the backend, then provision wrapped DEKs for every existing resource.
+                  </p>
+                  <LabeledInput
+                    autoComplete="off"
+                    label="API user label"
+                    onChange={setApiUserLabel}
+                    placeholder="CLI integration, automation, server agent"
+                    type="text"
+                    value={apiUserLabel}
+                  />
+                  <Button
+                    disabled={isCreatingApiUser || isMigrating || !apiUserLabel.trim()}
+                    onClick={() => {
+                      void handleCreateApiUser();
+                    }}
+                    size="lg"
+                    variant="outline"
+                  >
+                    {isCreatingApiUser ? 'Creating api user...' : 'Create api user'}
+                  </Button>
+                  {latestApiToken ? (
+                    <div className="rounded-[1.5rem] border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm leading-6 text-emerald-950">
+                      <p className="font-semibold">Latest api token</p>
+                      <p className="mt-2 break-all font-mono text-xs">{latestApiToken}</p>
+                    </div>
+                  ) : null}
+                  {apiUserProgress ? (
+                    <div className="grid gap-2 rounded-[1.5rem] border border-sky-200 bg-sky-50 px-4 py-3">
+                      <p className="text-sm font-semibold text-sky-950">
+                        Provisioning {apiUserProgress.username}
+                      </p>
+                      <div className="h-3 overflow-hidden rounded-full bg-sky-100">
+                        <div
+                          className="h-full rounded-full bg-sky-500 transition-[width]"
+                          style={{
+                            width: `${apiUserProgress.total === 0 ? 100 : (apiUserProgress.completed / apiUserProgress.total) * 100}%`,
+                          }}
+                        />
+                      </div>
+                      <p className="text-sm text-sky-950/80">
+                        Provisioned {apiUserProgress.completed} of {apiUserProgress.total} resources.
+                      </p>
+                    </div>
+                  ) : null}
+                  <div className="grid gap-3">
+                    {apiUsers.length === 0 ? (
+                      <p className="text-sm text-foreground/60">No api users created yet.</p>
+                    ) : (
+                      apiUsers.map((apiUser) => (
+                        <article
+                          className="grid gap-3 rounded-[1.4rem] border border-border/60 bg-white px-4 py-4"
+                          key={apiUser.id}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <p className="font-semibold text-foreground">{apiUser.label || 'Unlabeled api user'}</p>
+                              <p className="text-xs uppercase tracking-[0.2em] text-muted-foreground">
+                                {apiUser.username}
+                              </p>
+                            </div>
+                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                              {apiUser.provisioning.completedResourceCount}/{apiUser.provisioning.totalResourceCount}
+                            </span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-muted">
+                            <div
+                              className="h-full rounded-full bg-primary transition-[width]"
+                              style={{
+                                width: `${apiUser.provisioning.totalResourceCount === 0 ? 100 : (apiUser.provisioning.completedResourceCount / apiUser.provisioning.totalResourceCount) * 100}%`,
+                              }}
+                            />
+                          </div>
+                          <p className="text-sm text-foreground/70">
+                            {apiUser.provisioning.pendingResourceCount === 0
+                              ? 'Provisioning complete.'
+                              : `${apiUser.provisioning.pendingResourceCount} resource wrap${apiUser.provisioning.pendingResourceCount === 1 ? '' : 's'} still pending.`}
+                          </p>
+                          {apiUser.provisioning.pendingResourceCount > 0 ? (
+                            <Button
+                              disabled={!!apiUserProgress || isCreatingApiUser}
+                              onClick={() => {
+                                void handleResumeApiUser(apiUser.id);
+                              }}
+                              size="sm"
+                              variant="outline"
+                            >
+                              Resume provisioning
+                            </Button>
+                          ) : null}
+                        </article>
+                      ))
+                    )}
+                  </div>
                 </div>
               ) : null}
 
@@ -918,17 +1277,17 @@ export function AuthExperience() {
                   ? requiredOlderKeks.map((metadata) => (
                       <LabeledInput
                         autoComplete="current-password"
-                        key={metadata.kekId}
+                        key={metadata.kekPublicKey}
                         label={`Older password v${metadata.kekEpochVersion}`}
                         onChange={(value) =>
                           setOlderPasswords((currentPasswords) => ({
                             ...currentPasswords,
-                            [metadata.kekId]: value,
+                            [metadata.kekPublicKey]: value,
                           }))
                         }
                         placeholder="Type the older password for this active KEK"
                         type="password"
-                        value={olderPasswords[metadata.kekId] ?? ''}
+                        value={olderPasswords[metadata.kekPublicKey] ?? ''}
                       />
                     ))
                   : null}
@@ -1012,11 +1371,11 @@ function serializeNoteDocument(note: NoteDocument) {
 }
 
 async function decryptNoteRecord(note: NoteResponse, linkedKeks: PersistedLinkedKek[]): Promise<DecryptedNote> {
-  const linkedKek = findLinkedKek(linkedKeks, note.encryptedDek.kekId);
+  const linkedKek = findLinkedKek(linkedKeks, note.encryptedDek.kekPublicKey);
 
   if (!linkedKek) {
     throw new Error(
-      `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Log in again and provide the older password for that KEK.`,
+      `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekPublicKey}. Log in again and provide the older password for that KEK.`,
     );
   }
 
@@ -1031,6 +1390,30 @@ async function decryptNoteRecord(note: NoteResponse, linkedKeks: PersistedLinked
     payload: note,
     title: decryptedDocument.title,
     updatedAt: note.updatedAt,
+  };
+}
+
+async function decryptApiUserRecord(
+  apiUser: ApiUserResponse,
+  linkedKeks: PersistedLinkedKek[],
+): Promise<ApiUserView> {
+  const linkedKek = findLinkedKek(linkedKeks, apiUser.encryptedLabelDek.kekPublicKey);
+
+  if (!linkedKek) {
+    throw new Error(
+      `Missing the local KEK for api user label ${apiUser.encryptedLabelDek.kekPublicKey}.`,
+    );
+  }
+
+  return {
+    ...apiUser,
+    label: await decryptStringWithAsymmetricKek(
+      {
+        encryptedDek: apiUser.encryptedLabelDek,
+        encryptedPayload: apiUser.encryptedLabel,
+      },
+      linkedKek.cryptKey,
+    ),
   };
 }
 
@@ -1068,7 +1451,7 @@ function mergeLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
   const entriesByKekId = new Map<string, PersistedLinkedKek>();
 
   for (const linkedKek of linkedKeks) {
-    entriesByKekId.set(linkedKek.kekId, linkedKek);
+    entriesByKekId.set(linkedKek.kekPublicKey, linkedKek);
   }
 
   return [...entriesByKekId.values()].sort(
@@ -1076,8 +1459,8 @@ function mergeLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
   );
 }
 
-function findLinkedKek(linkedKeks: PersistedLinkedKek[], kekId: string) {
-  return linkedKeks.find((linkedKek) => linkedKek.kekId === kekId) ?? null;
+function findLinkedKek(linkedKeks: PersistedLinkedKek[], kekPublicKey: string) {
+  return linkedKeks.find((linkedKek) => linkedKek.kekPublicKey === kekPublicKey) ?? null;
 }
 
 function requireLinkedKek(linkedKeks: PersistedLinkedKek[], activeKekId: string | null) {
@@ -1101,12 +1484,12 @@ function resolveActiveKekId(
   const sortedMetadatas = sortKekMetadatas(session?.kekMetadatas ?? []);
 
   for (const metadata of sortedMetadatas) {
-    if (findLinkedKek(linkedKeks, metadata.kekId)) {
-      return metadata.kekId;
+    if (findLinkedKek(linkedKeks, metadata.kekPublicKey)) {
+      return metadata.kekPublicKey;
     }
   }
 
-  return linkedKeks[0]?.kekId ?? null;
+  return linkedKeks[0]?.kekPublicKey ?? null;
 }
 
 function formatTimestamp(value: string) {
@@ -1140,7 +1523,7 @@ async function deriveMissingLinkedKeks({
   const derivedLinkedKeks = [...baseLinkedKeks];
 
   for (const metadata of missingMetadatas) {
-    const password = passwordsByKekId[metadata.kekId]?.trim();
+    const password = passwordsByKekId[metadata.kekPublicKey]?.trim();
 
     if (!password) {
       throw new Error(
@@ -1153,7 +1536,7 @@ async function deriveMissingLinkedKeks({
     derivedLinkedKeks.push({
       cryptKey: credentials.cryptKey,
       kekEpochVersion: metadata.kekEpochVersion,
-      kekId: metadata.kekId,
+      kekPublicKey: metadata.kekPublicKey,
       saltHex,
     });
   }
