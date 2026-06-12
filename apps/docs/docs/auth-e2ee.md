@@ -11,6 +11,7 @@ The current design splits password handling into two responsibilities:
 - the device derives keys locally from `password + salt`
 - the backend only verifies a derived auth key and never receives the raw password
 - note content is encrypted and decrypted locally on the device with a per-resource DEK
+- each active KEK is tracked server-side with a `kek_id` and `kek_epoch_version` so clients can relink rotated passwords
 
 That means the backend participates in login, account creation, and token
 issuance, plus ciphertext sync, but it never receives plaintext notes, raw DEKs,
@@ -41,7 +42,8 @@ Registration happens in this order:
    - the normalized email
    - a SHA-512 hash of `authKey`
    - the user salt as `auth_salt`
-8. The backend returns an access token, a refresh token, and the user record.
+   - one initial `kek_metadata` row with a server-generated `kek_id` and `kek_epoch_version = 1`
+8. The backend returns an access token, a refresh token, the user record, and the active KEK metadata list.
 
 ## Login flow
 
@@ -51,17 +53,20 @@ can derive the same `authKey` again:
 1. The user enters email and password.
 2. The mobile app normalizes the email.
 3. The app sends the email to `POST /api/auth/salt`.
-4. The backend looks up the user and returns the stored `saltHex`.
+4. The backend looks up the user and returns the stored `saltHex` plus all active `kek_metadata` rows for that user.
 5. The app derives the `cryptKey` from `password + saltHex` with Argon2id.
-6. The app derives `authKey` from `cryptKey` with HKDF-SHA512 using the `auth:` context.
-7. The app sends `email` and `authKey` to `POST /api/auth/login`.
-8. The backend hashes the received `authKey` with SHA-512 and compares it in constant time with the stored hash.
-9. If verification succeeds, the backend issues access and refresh JWTs.
+6. The app links that derived key to the newest `kek_epoch_version` locally and reuses any previously stored older KEKs by `kek_id`.
+7. If older active KEKs exist but are not linked locally yet, the app asks for the matching older passwords during login and derives those older KEKs locally with the same salt.
+8. The app derives `authKey` from `cryptKey` with HKDF-SHA512 using the `auth:` context.
+9. The app sends `email` and `authKey` to `POST /api/auth/login`.
+10. The backend hashes the received `authKey` with SHA-512 and compares it in constant time with the stored hash.
+11. If verification succeeds, the backend issues access and refresh JWTs and returns the current KEK metadata list.
 
 ## Synced note encryption flow
 
-After login or registration, the mobile app keeps the derived `cryptKey` in
-memory for the authenticated session.
+After login or registration, the web and mobile clients keep a local keyring of
+linked KEKs keyed by `kek_id`. The newest epoch is the active KEK for newly
+encrypted resources, while older epochs remain available to decrypt older rows.
 
 When a note is saved:
 
@@ -69,17 +74,18 @@ When a note is saved:
 2. The app generates a fresh random DEK for that specific resource row.
 3. The app encrypts the note document with XSalsa20-Poly1305 using the DEK and a fresh nonce.
 4. The app encrypts the DEK with XSalsa20-Poly1305 using the KEK and a separate fresh nonce.
-5. The app sends both encrypted objects to the backend:
+5. The app includes the active `kekId` inside the wrapped DEK payload.
+6. The app sends both encrypted objects to the backend:
    - `encryptedPayload`: the note ciphertext + nonce
-   - `encryptedDek`: the wrapped DEK + nonce
-6. The backend stores:
+   - `encryptedDek`: `kekId` + wrapped DEK + nonce
+7. The backend stores:
    - the encrypted note row in `notes`
-   - the wrapped DEK row in `deks`, keyed by `resource_id`
+   - the wrapped DEK row in `deks`, keyed by `resource_id` and linked to the relevant `kek_id`
 
 When a note is loaded:
 
 1. The app fetches the encrypted note row and its wrapped DEK from the backend.
-2. The app derives the same KEK from the in-memory `cryptKey`.
+2. The app reads `encryptedDek.kekId` and resolves the matching KEK from local storage.
 3. The app decrypts the wrapped DEK locally on-device.
 4. The app decrypts the note document locally on-device with the unwrapped DEK.
 
@@ -98,9 +104,17 @@ For each encrypted resource row, the backend also stores:
 
 - the encrypted resource payload in its own table, for example `notes`
 - one wrapped DEK in the `deks` table
+- `kek_id` on the DEK row, which links the wrapped DEK to one server-tracked KEK epoch
 - `resource_id` on the DEK row, which points at the encrypted row id
 - `user_id` on the DEK row, which binds the wrapped DEK to the owning user
+- `wrapped_dek_hex` on the DEK row, which stores the wrapped DEK ciphertext
 - separate nonces for the encrypted payload and the wrapped DEK
+
+For each active KEK, the backend also stores one `kek_metadata` row with:
+
+- `kek_id`, generated server-side
+- `kek_epoch_version`, incremented per user for rotations
+- `user_id`, which scopes that KEK metadata row to one account
 
 The backend does not store:
 
@@ -110,13 +124,19 @@ The backend does not store:
 - the raw DEK for any encrypted resource
 - plaintext note contents
 
+The client stores locally:
+
+- linked KEKs keyed by `kek_id`
+- the latest known `kek_epoch_version` values returned by the backend
+- any older active KEKs that were relinked with older passwords during login
+
 ## Current routes
 
 | Route | Purpose |
 | --- | --- |
-| `POST /api/auth/salt` | return the stored per-user salt for login |
-| `POST /api/auth/register` | create a user from `email + authKey + saltHex` |
-| `POST /api/auth/login` | verify the derived auth key and issue tokens |
+| `POST /api/auth/salt` | return the stored per-user salt plus active KEK metadata for login |
+| `POST /api/auth/register` | create a user from `email + authKey + saltHex` and return the initial KEK metadata |
+| `POST /api/auth/login` | verify the derived auth key, issue tokens, and return active KEK metadata |
 | `GET /api/notes` | return encrypted notes plus wrapped DEKs for the authenticated user |
 | `POST /api/notes` | create an encrypted note row and its wrapped DEK row |
 | `GET /api/notes/{note_id}` | return one encrypted note and wrapped DEK |
@@ -128,4 +148,6 @@ The backend does not store:
 - Existing accounts and encrypted note rows created under older schemes are not compatible with the current flow.
 - The email is an identifier now, not an input to the password KDF.
 - Every encrypted resource row gets its own client-generated random DEK.
+- Every wrapped DEK is linked to a specific `kek_id`, which allows password rotations without reusing a single long-lived KEK identifier.
+- Clients must keep older linked KEKs locally if older ciphertext rows are still active.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

@@ -15,13 +15,22 @@ import { themeTokens } from '../theme/theme-tokens';
 type AuthMode = 'login' | 'register';
 
 export function AuthScreen() {
-  const { backendUrl, isHydrated, lastEmail, login, register, updateBackendUrl } = useAuth();
+  const {
+    backendUrl,
+    isHydrated,
+    lastEmail,
+    login,
+    pendingOlderKeks,
+    register,
+    updateBackendUrl,
+  } = useAuth();
   const { themeMode } = useAppTheme();
   const tokens = themeTokens[themeMode];
 
   const [mode, setMode] = useState<AuthMode>('register');
   const [email, setEmail] = useState(lastEmail);
   const [password, setPassword] = useState('');
+  const [olderPasswords, setOlderPasswords] = useState<Record<string, string>>({});
   const [backendUrlInput, setBackendUrlInput] = useState(backendUrl);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -36,8 +45,10 @@ export function AuthScreen() {
       if (mode === 'register') {
         await register(email, password);
       } else {
-        await login(email, password);
+        await login(email, password, olderPasswords);
       }
+
+      setOlderPasswords({});
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : 'Authentication failed unexpectedly.',
@@ -95,6 +106,26 @@ export function AuthScreen() {
           themeMode={themeMode}
           value={password}
         />
+        {mode === 'login'
+          ? pendingOlderKeks.map((metadata) => (
+              <LabeledInput
+                autoCapitalize="none"
+                autoComplete="password"
+                key={metadata.kekId}
+                label={`Older password v${metadata.kekEpochVersion}`}
+                onChangeText={(value) =>
+                  setOlderPasswords((currentPasswords) => ({
+                    ...currentPasswords,
+                    [metadata.kekId]: value,
+                  }))
+                }
+                placeholder="Type the older password for this active KEK"
+                secureTextEntry
+                themeMode={themeMode}
+                value={olderPasswords[metadata.kekId] ?? ''}
+              />
+            ))
+          : null}
         <LabeledInput
           autoCapitalize="none"
           autoCorrect={false}
@@ -108,6 +139,12 @@ export function AuthScreen() {
         <Text className={`text-sm leading-6 ${tokens.body}`}>
           On a physical device, point this at a reachable LAN address for the Rust backend.
         </Text>
+        {mode === 'login' && pendingOlderKeks.length > 0 ? (
+          <Text className="rounded-2xl bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900 dark:bg-amber-950 dark:text-amber-100">
+            Older KEKs are still active for this account. Enter the matching legacy passwords so
+            this device can relink those KEKs locally and keep decrypting older notes.
+          </Text>
+        ) : null}
 
         {errorMessage ? (
           <Text className="rounded-2xl bg-rose-100 px-4 py-3 text-sm font-medium text-rose-700 dark:bg-rose-950 dark:text-rose-200">

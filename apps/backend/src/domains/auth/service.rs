@@ -4,6 +4,7 @@ use axum::{
 };
 use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
+use sea_orm::TransactionTrait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::future::ready;
@@ -12,7 +13,7 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    domains::auth::{entity, repository},
+    domains::auth::{entity, kek_metadata_entity, repository},
     error::{AppError, AppResult},
 };
 
@@ -28,10 +29,22 @@ pub struct LoginCommand {
 }
 
 pub struct AuthSession {
+    pub kek_metadatas: Vec<KekMetadata>,
     pub token: String,
     pub refresh_token: String,
     pub user_id: Uuid,
     pub email: String,
+}
+
+pub struct SaltMaterial {
+    pub kek_metadatas: Vec<KekMetadata>,
+    pub salt_hex: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct KekMetadata {
+    pub kek_epoch_version: i32,
+    pub kek_id: Uuid,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -69,19 +82,34 @@ pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<A
         ));
     }
 
+    let now = Utc::now().fixed_offset();
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start the auth transaction"))?;
+
     let new_user = repository::insert_user(
-        &state.db,
+        &transaction,
         email,
         hash_auth_key(&command.auth_key),
         auth_salt,
-        Utc::now().fixed_offset(),
+        now,
     )
     .await?;
 
-    build_auth_session(state, &new_user)
+    let initial_kek_metadata = repository::insert_kek_metadata(&transaction, new_user.id, 1, now)
+        .await?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit the auth transaction"))?;
+
+    build_auth_session(state, &new_user, vec![initial_kek_metadata])
 }
 
-pub async fn salt(state: &AppState, email: &str) -> AppResult<String> {
+pub async fn salt(state: &AppState, email: &str) -> AppResult<SaltMaterial> {
     let email = normalize_email(email)?;
 
     let user = repository::find_user_by_email(&state.db, &email)
@@ -92,7 +120,14 @@ pub async fn salt(state: &AppState, email: &str) -> AppResult<String> {
         .auth_salt
         .ok_or_else(|| AppError::unauthorized("invalid email or password"))?;
 
-    normalize_auth_salt(&auth_salt)
+    Ok(SaltMaterial {
+        kek_metadatas: repository::list_kek_metadata_for_user(&state.db, user.id)
+            .await?
+            .into_iter()
+            .map(map_kek_metadata)
+            .collect(),
+        salt_hex: normalize_auth_salt(&auth_salt)?,
+    })
 }
 
 pub async fn login(state: &AppState, command: LoginCommand) -> AppResult<AuthSession> {
@@ -113,16 +148,30 @@ pub async fn login(state: &AppState, command: LoginCommand) -> AppResult<AuthSes
         return Err(AppError::unauthorized("invalid email or auth key"));
     }
 
-    build_auth_session(state, &user)
+    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, user.id).await?;
+
+    build_auth_session(state, &user, kek_metadatas)
 }
 
-fn build_auth_session(state: &AppState, user: &entity::Model) -> AppResult<AuthSession> {
+fn build_auth_session(
+    state: &AppState,
+    user: &entity::Model,
+    kek_metadatas: Vec<kek_metadata_entity::Model>,
+) -> AppResult<AuthSession> {
     Ok(AuthSession {
+        kek_metadatas: kek_metadatas.into_iter().map(map_kek_metadata).collect(),
         token: issue_token(state, user, TokenType::Access)?,
         refresh_token: issue_token(state, user, TokenType::Refresh)?,
         user_id: user.id,
         email: user.email.clone(),
     })
+}
+
+fn map_kek_metadata(metadata: kek_metadata_entity::Model) -> KekMetadata {
+    KekMetadata {
+        kek_epoch_version: metadata.kek_epoch_version,
+        kek_id: metadata.kek_id,
+    }
 }
 
 fn issue_token(state: &AppState, user: &entity::Model, token_type: TokenType) -> AppResult<String> {

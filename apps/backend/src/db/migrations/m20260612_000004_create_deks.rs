@@ -12,9 +12,10 @@ impl MigrationTrait for Migration {
                     .table(Deks::Table)
                     .if_not_exists()
                     .col(ColumnDef::new(Deks::ResourceId).uuid().not_null().primary_key())
+                    .col(ColumnDef::new(Deks::KekId).uuid().not_null())
                     .col(ColumnDef::new(Deks::UserId).uuid().not_null())
                     .col(ColumnDef::new(Deks::Algorithm).string().not_null())
-                    .col(ColumnDef::new(Deks::CiphertextHex).text().not_null())
+                    .col(ColumnDef::new(Deks::WrappedDekHex).text().not_null())
                     .col(ColumnDef::new(Deks::NonceHex).string().not_null())
                     .col(ColumnDef::new(Deks::Version).integer().not_null())
                     .col(
@@ -28,6 +29,13 @@ impl MigrationTrait for Migration {
                             .timestamp_with_time_zone()
                             .not_null()
                             .default(Expr::current_timestamp()),
+                    )
+                    .foreign_key(
+                        ForeignKey::create()
+                            .name("fk-deks-kek-id")
+                            .from(Deks::Table, Deks::KekId)
+                            .to(KekMetadata::Table, KekMetadata::KekId)
+                            .on_delete(ForeignKeyAction::Restrict),
                     )
                     .foreign_key(
                         ForeignKey::create()
@@ -63,13 +71,20 @@ impl MigrationTrait for Migration {
 enum Deks {
     Table,
     ResourceId,
+    KekId,
     UserId,
     Algorithm,
-    CiphertextHex,
+    WrappedDekHex,
     NonceHex,
     Version,
     CreatedAt,
     UpdatedAt,
+}
+
+#[derive(DeriveIden)]
+enum KekMetadata {
+    Table,
+    KekId,
 }
 
 #[derive(DeriveIden)]

@@ -19,7 +19,13 @@ export type EncryptedPayload = {
   version: 1;
 };
 
-export type KekWrappedPayload = EncryptedPayload;
+export type KekWrappedPayload = {
+  algorithm: 'xsalsa20-poly1305';
+  kekId: string;
+  nonceHex: string;
+  version: 1;
+  wrappedDekHex: string;
+};
 
 export type KekDekEncryptedPayload = {
   encryptedDek: KekWrappedPayload;
@@ -108,14 +114,25 @@ export function createE2ee(driver: E2eeDriver) {
     }
   }
 
-  function encryptStringWithDek(value: string, cryptKey: CryptKey): KekDekEncryptedPayload {
+  function encryptStringWithDek(
+    value: string,
+    cryptKey: CryptKey,
+    kekId: string,
+  ): KekDekEncryptedPayload {
+    const normalizedKekId = kekId.trim();
+
+    if (!normalizedKekId) {
+      throw new Error('A KEK id is required to encrypt data.');
+    }
+
     const dek = driver.randomBytes(resolveSecretboxKeyBytes(driver));
 
     return {
-      encryptedDek: encryptBytesPayload(
+      encryptedDek: encryptWrappedDekPayload(
         driver,
         dek,
         deriveKek(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
+        normalizedKekId,
       ),
       encryptedPayload: encryptBytesPayload(driver, utf8(value), dek),
     };
@@ -125,7 +142,7 @@ export function createE2ee(driver: E2eeDriver) {
     try {
       const dek = decryptBytesPayload(
         driver,
-        payload.encryptedDek,
+        mapWrappedDekToEncryptedPayload(payload.encryptedDek),
         deriveKek(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
       );
       const expectedDekLength = resolveSecretboxKeyBytes(driver);
@@ -273,12 +290,38 @@ function encryptBytesPayload(driver: E2eeDriver, value: Uint8Array, key: Uint8Ar
   };
 }
 
+function encryptWrappedDekPayload(
+  driver: E2eeDriver,
+  value: Uint8Array,
+  key: Uint8Array,
+  kekId: string,
+): KekWrappedPayload {
+  const encryptedPayload = encryptBytesPayload(driver, value, key);
+
+  return {
+    algorithm: encryptedPayload.algorithm,
+    kekId,
+    nonceHex: encryptedPayload.nonceHex,
+    version: encryptedPayload.version,
+    wrappedDekHex: encryptedPayload.ciphertextHex,
+  };
+}
+
 function decryptBytesPayload(driver: E2eeDriver, payload: EncryptedPayload, key: Uint8Array) {
   return driver.decrypt(
     hexToBytes(payload.ciphertextHex),
     hexToBytes(payload.nonceHex),
     key,
   );
+}
+
+function mapWrappedDekToEncryptedPayload(payload: KekWrappedPayload): EncryptedPayload {
+  return {
+    algorithm: payload.algorithm,
+    ciphertextHex: payload.wrappedDekHex,
+    nonceHex: payload.nonceHex,
+    version: payload.version,
+  };
 }
 
 function utf8(value: string) {

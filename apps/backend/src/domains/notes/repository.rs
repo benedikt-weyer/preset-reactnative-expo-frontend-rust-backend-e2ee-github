@@ -18,13 +18,21 @@ pub struct EncryptedBlob {
     pub version: i32,
 }
 
+pub struct WrappedDek {
+    pub algorithm: String,
+    pub kek_id: Uuid,
+    pub nonce_hex: String,
+    pub version: i32,
+    pub wrapped_dek_hex: String,
+}
+
 pub struct StoredNote {
     pub dek: dek_entity::Model,
     pub note: entity::Model,
 }
 
 pub struct NewNote {
-    pub encrypted_dek: EncryptedBlob,
+    pub encrypted_dek: WrappedDek,
     pub encrypted_payload: EncryptedBlob,
     pub user_id: Uuid,
     pub created_at: DateTimeWithTimeZone,
@@ -32,7 +40,7 @@ pub struct NewNote {
 }
 
 pub struct NoteChanges {
-    pub encrypted_dek: EncryptedBlob,
+    pub encrypted_dek: WrappedDek,
     pub encrypted_payload: EncryptedBlob,
     pub updated_at: DateTimeWithTimeZone,
 }
@@ -111,9 +119,10 @@ where
 
     let dek = dek_entity::ActiveModel {
         resource_id: Set(note_id),
+        kek_id: Set(new_note.encrypted_dek.kek_id),
         user_id: Set(new_note.user_id),
         algorithm: Set(new_note.encrypted_dek.algorithm),
-        ciphertext_hex: Set(new_note.encrypted_dek.ciphertext_hex),
+        wrapped_dek_hex: Set(new_note.encrypted_dek.wrapped_dek_hex),
         nonce_hex: Set(new_note.encrypted_dek.nonce_hex),
         version: Set(new_note.encrypted_dek.version),
         created_at: Set(new_note.created_at),
@@ -144,7 +153,8 @@ where
 
     let mut dek_active_model: dek_entity::ActiveModel = stored_note.dek.into();
     dek_active_model.algorithm = Set(changes.encrypted_dek.algorithm);
-    dek_active_model.ciphertext_hex = Set(changes.encrypted_dek.ciphertext_hex);
+    dek_active_model.kek_id = Set(changes.encrypted_dek.kek_id);
+    dek_active_model.wrapped_dek_hex = Set(changes.encrypted_dek.wrapped_dek_hex);
     dek_active_model.nonce_hex = Set(changes.encrypted_dek.nonce_hex);
     dek_active_model.version = Set(changes.encrypted_dek.version);
     dek_active_model.updated_at = Set(changes.updated_at);

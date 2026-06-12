@@ -141,7 +141,7 @@ function validatePayload(
     typeof responseBody.id !== 'string' ||
     typeof responseBody.createdAt !== 'string' ||
     typeof responseBody.updatedAt !== 'string' ||
-    !isEncryptedPayload(responseBody.encryptedDek) ||
+    !isWrappedDekPayload(responseBody.encryptedDek) ||
     !isEncryptedPayload(responseBody.encryptedPayload)
   ) {
     throw new Error('The backend returned an invalid note payload.');
@@ -154,6 +154,21 @@ function validatePayload(
     id: responseBody.id,
     updatedAt: responseBody.updatedAt,
   };
+}
+
+function isWrappedDekPayload(value: unknown): value is KekDekEncryptedPayload['encryptedDek'] {
+  return !!value &&
+    typeof value === 'object' &&
+    'algorithm' in value &&
+    'kekId' in value &&
+    'nonceHex' in value &&
+    'version' in value &&
+    'wrappedDekHex' in value &&
+    typeof value.algorithm === 'string' &&
+    typeof value.kekId === 'string' &&
+    typeof value.nonceHex === 'string' &&
+    typeof value.version === 'number' &&
+    typeof value.wrappedDekHex === 'string';
 }
 
 function isEncryptedPayload(value: unknown): value is KekDekEncryptedPayload['encryptedPayload'] {

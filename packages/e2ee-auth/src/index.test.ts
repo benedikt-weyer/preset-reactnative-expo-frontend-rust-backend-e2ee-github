@@ -177,10 +177,12 @@ describe('encryptStringWithDek/decryptStringWithDek', () => {
       'correct horse',
       '00112233445566778899aabbccddeeff',
     );
-    const payload = encryptStringWithDek('secret note', cryptKey);
+    const payload = encryptStringWithDek('secret note', cryptKey, 'kek-current');
 
     expect(payload.encryptedDek.algorithm).toBe('xsalsa20-poly1305');
+    expect(payload.encryptedDek.kekId).toBe('kek-current');
     expect(payload.encryptedDek.version).toBe(1);
+    expect(payload.encryptedDek.wrappedDekHex).toMatch(/^[0-9a-f]+$/);
     expect(payload.encryptedPayload.algorithm).toBe('xsalsa20-poly1305');
     expect(payload.encryptedPayload.version).toBe(1);
     expect(decryptStringWithDek(payload, cryptKey)).toBe('secret note');
@@ -197,10 +199,22 @@ describe('encryptStringWithDek/decryptStringWithDek', () => {
       'correct horse',
       'ffeeddccbbaa99887766554433221100',
     );
-    const payload = encryptStringWithDek('secret note', cryptKey);
+    const payload = encryptStringWithDek('secret note', cryptKey, 'kek-current');
 
     expect(() => decryptStringWithDek(payload, otherCredentials.cryptKey)).toThrow(
       'Unable to decrypt data with the current password.',
+    );
+  });
+
+  it('requires a KEK id when wrapping a DEK', async () => {
+    const { cryptKey } = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      '00112233445566778899aabbccddeeff',
+    );
+
+    expect(() => encryptStringWithDek('secret note', cryptKey, '   ')).toThrow(
+      'A KEK id is required to encrypt data.',
     );
   });
 });

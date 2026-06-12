@@ -3,6 +3,11 @@ export type BaseAuthApiRequest = {
   email: string;
 };
 
+export type KekMetadata = {
+  kekEpochVersion: number;
+  kekId: string;
+};
+
 export type LoginApiRequest = BaseAuthApiRequest & {
   authKey: string;
 };
@@ -12,6 +17,7 @@ export type RegisterApiRequest = LoginApiRequest & {
 };
 
 export type AuthApiResponse = {
+  kekMetadatas: KekMetadata[];
   refreshToken: string;
   token: string;
   user: {
@@ -20,7 +26,8 @@ export type AuthApiResponse = {
   };
 };
 
-type PasswordSaltResponse = {
+export type PasswordSaltResponse = {
+  kekMetadatas: KekMetadata[];
   saltHex: string;
 };
 
@@ -44,15 +51,11 @@ export async function fetchPasswordSalt(request: BaseAuthApiRequest) {
     throw new Error(readErrorMessage(responseBody));
   }
 
-  if (
-    !responseBody ||
-    !(responseBody as PasswordSaltResponse).saltHex ||
-    typeof (responseBody as PasswordSaltResponse).saltHex !== 'string'
-  ) {
+  if (!isPasswordSaltResponse(responseBody)) {
     throw new Error('The backend did not return a password salt.');
   }
 
-  return (responseBody as PasswordSaltResponse).saltHex;
+  return responseBody;
 }
 
 export async function loginRequest(request: LoginApiRequest) {
@@ -88,15 +91,49 @@ async function postAuthRequest(
     throw new Error(readErrorMessage(responseBody));
   }
 
-  if (
-    !responseBody ||
-    !(responseBody as AuthApiResponse).token ||
-    !(responseBody as AuthApiResponse).refreshToken
-  ) {
+  if (!isAuthApiResponse(responseBody)) {
     throw new Error('The backend response was incomplete.');
   }
 
-  return responseBody as AuthApiResponse;
+  return responseBody;
+}
+
+function isAuthApiResponse(value: unknown): value is AuthApiResponse {
+  return !!value &&
+    typeof value === 'object' &&
+    'token' in value &&
+    'refreshToken' in value &&
+    'user' in value &&
+    'kekMetadatas' in value &&
+    typeof value.token === 'string' &&
+    typeof value.refreshToken === 'string' &&
+    !!value.user &&
+    typeof value.user === 'object' &&
+    'email' in value.user &&
+    'id' in value.user &&
+    typeof value.user.email === 'string' &&
+    typeof value.user.id === 'string' &&
+    Array.isArray(value.kekMetadatas) &&
+    value.kekMetadatas.every(isKekMetadata);
+}
+
+function isPasswordSaltResponse(value: unknown): value is PasswordSaltResponse {
+  return !!value &&
+    typeof value === 'object' &&
+    'saltHex' in value &&
+    'kekMetadatas' in value &&
+    typeof value.saltHex === 'string' &&
+    Array.isArray(value.kekMetadatas) &&
+    value.kekMetadatas.every(isKekMetadata);
+}
+
+function isKekMetadata(value: unknown): value is KekMetadata {
+  return !!value &&
+    typeof value === 'object' &&
+    'kekEpochVersion' in value &&
+    'kekId' in value &&
+    typeof value.kekEpochVersion === 'number' &&
+    typeof value.kekId === 'string';
 }
 
 function readErrorMessage(

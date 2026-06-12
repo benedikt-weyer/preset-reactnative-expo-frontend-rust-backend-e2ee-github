@@ -12,7 +12,7 @@ use crate::{
 };
 
 pub struct SaveNoteCommand {
-    pub encrypted_dek: SaveEncryptedBlobCommand,
+    pub encrypted_dek: SaveWrappedDekCommand,
     pub encrypted_payload: SaveEncryptedBlobCommand,
 }
 
@@ -23,6 +23,14 @@ pub struct SaveEncryptedBlobCommand {
     pub version: i32,
 }
 
+pub struct SaveWrappedDekCommand {
+    pub algorithm: String,
+    pub kek_id: String,
+    pub nonce_hex: String,
+    pub version: i32,
+    pub wrapped_dek_hex: String,
+}
+
 pub struct StoredEncryptedBlob {
     pub algorithm: String,
     pub ciphertext_hex: String,
@@ -30,9 +38,17 @@ pub struct StoredEncryptedBlob {
     pub version: i32,
 }
 
+pub struct StoredWrappedDek {
+    pub algorithm: String,
+    pub kek_id: String,
+    pub nonce_hex: String,
+    pub version: i32,
+    pub wrapped_dek_hex: String,
+}
+
 pub struct StoredNote {
     pub created_at: String,
-    pub encrypted_dek: StoredEncryptedBlob,
+    pub encrypted_dek: StoredWrappedDek,
     pub encrypted_payload: StoredEncryptedBlob,
     pub id: Uuid,
     pub updated_at: String,
@@ -76,7 +92,7 @@ pub async fn create_note(
     let stored_note = repository::insert_note(
         &transaction,
         repository::NewNote {
-            encrypted_dek: map_save_blob(&command.encrypted_dek),
+            encrypted_dek: map_wrapped_dek(&command.encrypted_dek)?,
             encrypted_payload: map_save_blob(&command.encrypted_payload),
             user_id: authenticated_user.user_id,
             created_at: now,
@@ -114,7 +130,7 @@ pub async fn update_note(
         &transaction,
         existing_note,
         repository::NoteChanges {
-            encrypted_dek: map_save_blob(&command.encrypted_dek),
+            encrypted_dek: map_wrapped_dek(&command.encrypted_dek)?,
             encrypted_payload: map_save_blob(&command.encrypted_payload),
             updated_at: Utc::now().fixed_offset(),
         },
@@ -155,7 +171,26 @@ pub async fn delete_note(
 
 fn validate_payload(payload: &SaveNoteCommand) -> AppResult<()> {
     validate_encrypted_blob(&payload.encrypted_payload, "encryptedPayload")?;
-    validate_encrypted_blob(&payload.encrypted_dek, "encryptedDek")?;
+    validate_wrapped_dek(&payload.encrypted_dek)?;
+
+    Ok(())
+}
+
+fn validate_wrapped_dek(payload: &SaveWrappedDekCommand) -> AppResult<()> {
+    if payload.algorithm.trim() != "xsalsa20-poly1305" {
+        return Err(AppError::validation(
+            "encryptedDek.algorithm must be xsalsa20-poly1305",
+        ));
+    }
+
+    if payload.version != 1 {
+        return Err(AppError::validation("encryptedDek.version must be 1"));
+    }
+
+    Uuid::parse_str(payload.kek_id.trim())
+        .map_err(|_| AppError::validation("encryptedDek.kekId must be a valid uuid"))?;
+    normalize_hex_field(&payload.wrapped_dek_hex, "encryptedDek.wrappedDekHex")?;
+    normalize_hex_field(&payload.nonce_hex, "encryptedDek.nonceHex")?;
 
     Ok(())
 }
@@ -186,14 +221,26 @@ fn map_save_blob(payload: &SaveEncryptedBlobCommand) -> repository::EncryptedBlo
     }
 }
 
+fn map_wrapped_dek(payload: &SaveWrappedDekCommand) -> AppResult<repository::WrappedDek> {
+    Ok(repository::WrappedDek {
+        algorithm: payload.algorithm.trim().to_owned(),
+        kek_id: Uuid::parse_str(payload.kek_id.trim())
+            .map_err(|_| AppError::validation("encryptedDek.kekId must be a valid uuid"))?,
+        nonce_hex: payload.nonce_hex.trim().to_owned(),
+        version: payload.version,
+        wrapped_dek_hex: payload.wrapped_dek_hex.trim().to_owned(),
+    })
+}
+
 fn map_stored_note(stored_note: repository::StoredNote) -> StoredNote {
     StoredNote {
         created_at: stored_note.note.created_at.to_rfc3339(),
-        encrypted_dek: StoredEncryptedBlob {
+        encrypted_dek: StoredWrappedDek {
             algorithm: stored_note.dek.algorithm,
-            ciphertext_hex: stored_note.dek.ciphertext_hex,
+            kek_id: stored_note.dek.kek_id.to_string(),
             nonce_hex: stored_note.dek.nonce_hex,
             version: stored_note.dek.version,
+            wrapped_dek_hex: stored_note.dek.wrapped_dek_hex,
         },
         encrypted_payload: StoredEncryptedBlob {
             algorithm: stored_note.note.algorithm,

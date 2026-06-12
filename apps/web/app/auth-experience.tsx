@@ -19,6 +19,7 @@ import {
   loginRequest,
   registerRequest,
   type AuthApiResponse,
+  type KekMetadata,
 } from '@/lib/auth-api';
 import {
   createNote,
@@ -29,6 +30,7 @@ import {
 } from '@/lib/test-note-api';
 import {
   localStorageAuthPersistence,
+  type PersistedLinkedKek,
   readAuthPreferences,
   writeAuthPreferences,
 } from '@/lib/auth-storage';
@@ -65,9 +67,10 @@ export function AuthExperience() {
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [session, setSession] = useState<AuthApiResponse | null>(null);
-  const [cryptKey, setCryptKey] = useState<CryptKey | null>(null);
-  const [storedCredentialsEmail, setStoredCredentialsEmail] = useState('');
-  const [storedSaltHex, setStoredSaltHex] = useState<string | null>(null);
+  const [linkedKeks, setLinkedKeks] = useState<PersistedLinkedKek[]>([]);
+  const [activeKekId, setActiveKekId] = useState<string | null>(null);
+  const [olderPasswords, setOlderPasswords] = useState<Record<string, string>>({});
+  const [requiredOlderKeks, setRequiredOlderKeks] = useState<KekMetadata[]>([]);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [isHydrated, setIsHydrated] = useState(false);
@@ -78,13 +81,13 @@ export function AuthExperience() {
       const preferences = readAuthPreferences();
       const storedSession = localStorageAuthPersistence.readAuthSession();
       const storedCredentials = localStorageAuthPersistence.readDerivedCredentials();
+      const nextLinkedKeks = storedCredentials?.linkedKeks ?? [];
 
       setBackendUrl(preferences.backendUrl);
-      setCryptKey(storedCredentials?.cryptKey ?? null);
+      setLinkedKeks(nextLinkedKeks);
       setSession(storedSession);
       setEmail(storedCredentials?.email ?? preferences.lastEmail);
-      setStoredCredentialsEmail(storedCredentials?.email ?? '');
-      setStoredSaltHex(storedCredentials?.saltHex ?? null);
+      setActiveKekId(resolveActiveKekId(storedSession, nextLinkedKeks));
 
       setIsHydrated(true);
     });
@@ -95,19 +98,19 @@ export function AuthExperience() {
       return;
     }
 
-    if (!cryptKey || !session) {
+    if (!session || linkedKeks.length === 0) {
       setNotes([]);
       applySelectedNote(null);
       return;
     }
 
     void loadNotes({
-      cryptKey,
       emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
+      linkedKeks,
       token: session.token,
       trimmedBackendUrl: backendUrl.trim(),
     });
-  }, [backendUrl, cryptKey, isHydrated, session]);
+  }, [activeKekId, backendUrl, isHydrated, linkedKeks, session]);
 
   async function handleSubmit() {
     setErrorMessage(null);
@@ -116,18 +119,34 @@ export function AuthExperience() {
     try {
       const trimmedBackendUrl = backendUrl.trim();
       const normalizedEmail = normalizeEmail(email);
-      let saltHex: string;
+      const storedCredentials = localStorageAuthPersistence.readDerivedCredentials();
+      const persistedLinkedKeks =
+        storedCredentials?.email === normalizedEmail ? storedCredentials.linkedKeks : [];
+      const saltMaterial =
+        mode === 'login'
+          ? await fetchPasswordSalt({
+              baseUrl: trimmedBackendUrl,
+              email: normalizedEmail,
+            })
+          : {
+              kekMetadatas: [] as KekMetadata[],
+              saltHex: await createPasswordSalt(),
+            };
+      const saltHex = saltMaterial.saltHex;
+      const sortedKekMetadatas = sortKekMetadatas(saltMaterial.kekMetadatas);
+      const missingOlderKeks =
+        mode === 'login'
+          ? sortedKekMetadatas.slice(1).filter(
+              (metadata) =>
+                !findLinkedKek(persistedLinkedKeks, metadata.kekId) &&
+                !olderPasswords[metadata.kekId]?.trim(),
+            )
+          : [];
 
-      if (mode === 'login') {
-        saltHex =
-          storedSaltHex && storedCredentialsEmail === normalizedEmail
-            ? storedSaltHex
-            : await fetchPasswordSalt({
-                baseUrl: trimmedBackendUrl,
-                email: normalizedEmail,
-              });
-      } else {
-        saltHex = await createPasswordSalt();
+      setRequiredOlderKeks(sortedKekMetadatas.slice(1));
+
+      if (missingOlderKeks.length > 0) {
+        throw new Error('Enter the passwords for the older active KEKs before logging in.');
       }
 
       const credentials = await deriveCredentials(normalizedEmail, password, saltHex);
@@ -144,29 +163,72 @@ export function AuthExperience() {
               email: credentials.email,
               saltHex,
             });
+      const responseKekMetadatas = sortKekMetadatas(response.kekMetadatas);
+      const latestKekMetadata = responseKekMetadatas[0];
+
+      if (!latestKekMetadata) {
+        throw new Error('The backend did not return KEK metadata.');
+      }
+
+      const retainedLinkedKeks = persistedLinkedKeks.filter((linkedKek) =>
+        responseKekMetadatas.some((metadata) => metadata.kekId === linkedKek.kekId),
+      );
+      const nextDerivedLinkedKeks: PersistedLinkedKek[] = [
+        {
+          cryptKey: credentials.cryptKey,
+          kekEpochVersion: latestKekMetadata.kekEpochVersion,
+          kekId: latestKekMetadata.kekId,
+          saltHex,
+        },
+      ];
+
+      for (const metadata of responseKekMetadatas.slice(1)) {
+        if (findLinkedKek(retainedLinkedKeks, metadata.kekId)) {
+          continue;
+        }
+
+        const olderPassword = olderPasswords[metadata.kekId]?.trim();
+
+        if (!olderPassword) {
+          continue;
+        }
+
+        const olderCredentials = await deriveCredentials(normalizedEmail, olderPassword, saltHex);
+
+        nextDerivedLinkedKeks.push({
+          cryptKey: olderCredentials.cryptKey,
+          kekEpochVersion: metadata.kekEpochVersion,
+          kekId: metadata.kekId,
+          saltHex,
+        });
+      }
+
+      const nextLinkedKeks = mergeLinkedKeks([
+        ...retainedLinkedKeks,
+        ...nextDerivedLinkedKeks,
+      ]);
 
       setSession(response);
-      setCryptKey(credentials.cryptKey);
+      setLinkedKeks(nextLinkedKeks);
+      setActiveKekId(latestKekMetadata.kekId);
       setEmail(credentials.email);
       setPassword('');
-      setStoredCredentialsEmail(credentials.email);
-      setStoredSaltHex(saltHex);
+      setOlderPasswords({});
       writeAuthPreferences({
         backendUrl: trimmedBackendUrl,
         lastEmail: credentials.email,
       });
       localStorageAuthPersistence.writeAuthSession(response);
       localStorageAuthPersistence.writeDerivedCredentials({
-        cryptKey: credentials.cryptKey,
         email: credentials.email,
-        saltHex,
+        linkedKeks: nextLinkedKeks,
       });
       await loadNotes({
-        cryptKey: credentials.cryptKey,
         emptyMessage:
           mode === 'register'
             ? 'Account created. Create a note to push ciphertext to the backend.'
             : 'Logged in. Create a note to push ciphertext to the backend.',
+        linkedKeks: nextLinkedKeks,
         token: response.token,
         trimmedBackendUrl,
       });
@@ -181,27 +243,25 @@ export function AuthExperience() {
 
   function handleSignOut() {
     setSession(null);
-    setCryptKey(null);
+    setActiveKekId(null);
     setPassword('');
-    setStoredCredentialsEmail('');
-    setStoredSaltHex(null);
+    setOlderPasswords({});
     setNotes([]);
     applySelectedNote(null);
     localStorageAuthPersistence.clearAuthSession();
-    localStorageAuthPersistence.clearDerivedCredentials();
     setStatusMessage(
-      'Signed out. Synced notes remain on the backend, and the stored crypt material was cleared.',
+      'Signed out. Synced notes remain on the backend, and the linked KEKs stay stored for the next login.',
     );
   }
 
   async function loadNotes({
-    cryptKey,
     emptyMessage,
+    linkedKeks,
     token,
     trimmedBackendUrl,
   }: {
-    cryptKey: CryptKey;
     emptyMessage: string;
+    linkedKeks: PersistedLinkedKek[];
     token: string;
     trimmedBackendUrl: string;
   }) {
@@ -211,7 +271,7 @@ export function AuthExperience() {
         token,
       });
       const decryptedNotes = sortNotes(
-        remoteNotes.map((note) => decryptNoteRecord(note, cryptKey)),
+        remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks)),
       );
 
       setNotes(decryptedNotes);
@@ -254,9 +314,11 @@ export function AuthExperience() {
   }
 
   async function handleSaveNote() {
-    if (!cryptKey || !session) {
+    if (!session) {
       return;
     }
+
+    const activeLinkedKek = requireLinkedKek(linkedKeks, activeKekId);
 
     setErrorMessage(null);
 
@@ -266,7 +328,8 @@ export function AuthExperience() {
           content: noteContent,
           title: noteTitle,
         }),
-        cryptKey,
+        activeLinkedKek.cryptKey,
+        activeLinkedKek.kekId,
       );
       const savedNote = selectedNoteId
         ? await updateNote({
@@ -281,7 +344,7 @@ export function AuthExperience() {
             token: session.token,
           });
 
-      const decryptedNote = decryptNoteRecord(savedNote, cryptKey);
+          const decryptedNote = decryptNoteRecord(savedNote, linkedKeks);
       const nextNotes = sortNotes([
         decryptedNote,
         ...notes.filter((note) => note.id !== decryptedNote.id),
@@ -538,12 +601,37 @@ export function AuthExperience() {
                   type="password"
                   value={password}
                 />
+                {mode === 'login' && requiredOlderKeks.length > 0
+                  ? requiredOlderKeks.map((metadata) => (
+                      <LabeledInput
+                        autoComplete="current-password"
+                        key={metadata.kekId}
+                        label={`Older password v${metadata.kekEpochVersion}`}
+                        onChange={(value) =>
+                          setOlderPasswords((currentPasswords) => ({
+                            ...currentPasswords,
+                            [metadata.kekId]: value,
+                          }))
+                        }
+                        placeholder="Type the older password for this active KEK"
+                        type="password"
+                        value={olderPasswords[metadata.kekId] ?? ''}
+                      />
+                    ))
+                  : null}
               </div>
 
               <p className="rounded-[1.5rem] border border-border/60 bg-background/70 px-4 py-3 text-sm leading-6 text-foreground/75">
                 The typed password never goes to the backend directly. The browser derives the
                 local crypt key and the backend auth key from the same salt-backed input.
               </p>
+              {mode === 'login' && requiredOlderKeks.length > 0 ? (
+                <p className="rounded-[1.5rem] border border-amber-200 bg-amber-50 px-4 py-3 text-sm leading-6 text-amber-900">
+                  Older KEKs are still active for this account. Enter the matching legacy
+                  passwords so this device can relink those KEKs locally and continue decrypting
+                  older notes.
+                </p>
+              ) : null}
 
               {errorMessage ? (
                 <p className="rounded-[1.4rem] bg-rose-100 px-4 py-3 text-sm font-medium text-rose-700">
@@ -610,8 +698,18 @@ function serializeNoteDocument(note: NoteDocument) {
   });
 }
 
-function decryptNoteRecord(note: NoteResponse, cryptKey: CryptKey): DecryptedNote {
-  const decryptedDocument = deserializeNoteDocument(decryptStringWithDek(note, cryptKey));
+function decryptNoteRecord(note: NoteResponse, linkedKeks: PersistedLinkedKek[]): DecryptedNote {
+  const linkedKek = findLinkedKek(linkedKeks, note.encryptedDek.kekId);
+
+  if (!linkedKek) {
+    throw new Error(
+      `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Log in again and provide the older password for that KEK.`,
+    );
+  }
+
+  const decryptedDocument = deserializeNoteDocument(
+    decryptStringWithDek(note, linkedKek.cryptKey),
+  );
 
   return {
     content: decryptedDocument.content,
@@ -645,6 +743,57 @@ function deserializeNoteDocument(value: string): NoteDocument {
 
 function sortNotes(notes: DecryptedNote[]) {
   return [...notes].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function sortKekMetadatas(kekMetadatas: KekMetadata[]) {
+  return [...kekMetadatas].sort(
+    (left, right) => right.kekEpochVersion - left.kekEpochVersion,
+  );
+}
+
+function mergeLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
+  const entriesByKekId = new Map<string, PersistedLinkedKek>();
+
+  for (const linkedKek of linkedKeks) {
+    entriesByKekId.set(linkedKek.kekId, linkedKek);
+  }
+
+  return [...entriesByKekId.values()].sort(
+    (left, right) => right.kekEpochVersion - left.kekEpochVersion,
+  );
+}
+
+function findLinkedKek(linkedKeks: PersistedLinkedKek[], kekId: string) {
+  return linkedKeks.find((linkedKek) => linkedKek.kekId === kekId) ?? null;
+}
+
+function requireLinkedKek(linkedKeks: PersistedLinkedKek[], activeKekId: string | null) {
+  if (!activeKekId) {
+    throw new Error('No active KEK is linked on this device. Log in again.');
+  }
+
+  const linkedKek = findLinkedKek(linkedKeks, activeKekId);
+
+  if (!linkedKek) {
+    throw new Error('The active KEK is missing from local storage. Log in again.');
+  }
+
+  return linkedKek;
+}
+
+function resolveActiveKekId(
+  session: AuthApiResponse | null,
+  linkedKeks: PersistedLinkedKek[],
+) {
+  const sortedMetadatas = sortKekMetadatas(session?.kekMetadatas ?? []);
+
+  for (const metadata of sortedMetadatas) {
+    if (findLinkedKek(linkedKeks, metadata.kekId)) {
+      return metadata.kekId;
+    }
+  }
+
+  return linkedKeks[0]?.kekId ?? null;
 }
 
 function formatTimestamp(value: string) {

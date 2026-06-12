@@ -35,6 +35,7 @@ pub struct RegisterRequest {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthResponse {
+    kek_metadatas: Vec<KekMetadataResponse>,
     token: String,
     refresh_token: String,
     user: UserResponse,
@@ -47,10 +48,18 @@ pub struct UserResponse {
     email: String,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaltResponse {
+    kek_metadatas: Vec<KekMetadataResponse>,
     salt_hex: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KekMetadataResponse {
+    kek_epoch_version: i32,
+    kek_id: Uuid,
 }
 
 pub async fn register(
@@ -74,8 +83,15 @@ pub async fn salt(
     State(state): State<AppState>,
     Json(payload): Json<EmailRequest>,
 ) -> AppResult<Json<SaltResponse>> {
+    let salt_material = service::salt(&state, &payload.email).await?;
+
     Ok(Json(SaltResponse {
-        salt_hex: service::salt(&state, &payload.email).await?,
+        kek_metadatas: salt_material
+            .kek_metadatas
+            .into_iter()
+            .map(map_kek_metadata_response)
+            .collect(),
+        salt_hex: salt_material.salt_hex,
     }))
 }
 
@@ -97,11 +113,23 @@ pub async fn login(
 
 fn map_auth_response(session: service::AuthSession) -> AuthResponse {
     AuthResponse {
+        kek_metadatas: session
+            .kek_metadatas
+            .into_iter()
+            .map(map_kek_metadata_response)
+            .collect(),
         token: session.token,
         refresh_token: session.refresh_token,
         user: UserResponse {
             id: session.user_id,
             email: session.email,
         },
+    }
+}
+
+fn map_kek_metadata_response(metadata: service::KekMetadata) -> KekMetadataResponse {
+    KekMetadataResponse {
+        kek_epoch_version: metadata.kek_epoch_version,
+        kek_id: metadata.kek_id,
     }
 }

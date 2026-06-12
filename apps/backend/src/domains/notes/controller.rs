@@ -27,7 +27,7 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveNoteRequest {
-    encrypted_dek: EncryptedBlobRequest,
+    encrypted_dek: WrappedDekRequest,
     encrypted_payload: EncryptedBlobRequest,
 }
 
@@ -40,11 +40,21 @@ pub struct EncryptedBlobRequest {
     version: i32,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WrappedDekRequest {
+    algorithm: String,
+    kek_id: String,
+    nonce_hex: String,
+    version: i32,
+    wrapped_dek_hex: String,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteResponse {
     id: Uuid,
-    encrypted_dek: EncryptedBlobResponse,
+    encrypted_dek: WrappedDekResponse,
     encrypted_payload: EncryptedBlobResponse,
     created_at: String,
     updated_at: String,
@@ -57,6 +67,16 @@ pub struct EncryptedBlobResponse {
     ciphertext_hex: String,
     nonce_hex: String,
     version: i32,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WrappedDekResponse {
+    algorithm: String,
+    kek_id: String,
+    nonce_hex: String,
+    version: i32,
+    wrapped_dek_hex: String,
 }
 
 pub async fn list_notes(
@@ -112,8 +132,18 @@ pub async fn delete_note(
 
 fn map_save_command(payload: SaveNoteRequest) -> service::SaveNoteCommand {
     service::SaveNoteCommand {
-        encrypted_dek: map_blob_request(payload.encrypted_dek),
+        encrypted_dek: map_wrapped_dek_request(payload.encrypted_dek),
         encrypted_payload: map_blob_request(payload.encrypted_payload),
+    }
+}
+
+fn map_wrapped_dek_request(payload: WrappedDekRequest) -> service::SaveWrappedDekCommand {
+    service::SaveWrappedDekCommand {
+        algorithm: payload.algorithm,
+        kek_id: payload.kek_id,
+        nonce_hex: payload.nonce_hex,
+        version: payload.version,
+        wrapped_dek_hex: payload.wrapped_dek_hex,
     }
 }
 
@@ -129,10 +159,20 @@ fn map_blob_request(payload: EncryptedBlobRequest) -> service::SaveEncryptedBlob
 fn map_note_response(note: service::StoredNote) -> NoteResponse {
     NoteResponse {
         id: note.id,
-        encrypted_dek: map_blob_response(note.encrypted_dek),
+        encrypted_dek: map_wrapped_dek_response(note.encrypted_dek),
         encrypted_payload: map_blob_response(note.encrypted_payload),
         created_at: note.created_at,
         updated_at: note.updated_at,
+    }
+}
+
+fn map_wrapped_dek_response(blob: service::StoredWrappedDek) -> WrappedDekResponse {
+    WrappedDekResponse {
+        algorithm: blob.algorithm,
+        kek_id: blob.kek_id,
+        nonce_hex: blob.nonce_hex,
+        version: blob.version,
+        wrapped_dek_hex: blob.wrapped_dek_hex,
     }
 }
 

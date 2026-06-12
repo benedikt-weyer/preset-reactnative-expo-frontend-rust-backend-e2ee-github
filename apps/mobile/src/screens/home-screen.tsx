@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import {
-  type CryptKey,
   decryptStringWithDek,
   encryptStringWithDek,
 } from '@repo/e2ee-auth/native';
@@ -33,7 +32,7 @@ type DecryptedNote = {
 };
 
 export function HomeScreen() {
-  const { backendUrl, cryptKey, session } = useAuth();
+  const { activeKekId, backendUrl, linkedKeks, session } = useAuth();
   const { themeMode } = useAppTheme();
   const tokens = themeTokens[themeMode];
   const [noteTitle, setNoteTitle] = useState('');
@@ -46,7 +45,7 @@ export function HomeScreen() {
     let isMounted = true;
 
     async function hydrateNotes() {
-      if (!cryptKey || !session) {
+      if (!session || linkedKeks.length === 0) {
         if (isMounted) {
           setNotes([]);
           applySelectedNote(null);
@@ -65,7 +64,7 @@ export function HomeScreen() {
         }
 
         const decryptedNotes = sortNotes(
-          remoteNotes.map((note) => decryptNoteRecord(note, cryptKey)),
+          remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks)),
         );
 
         setNotes(decryptedNotes);
@@ -96,7 +95,7 @@ export function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [backendUrl, cryptKey, session]);
+  }, [backendUrl, linkedKeks, session]);
 
   function applySelectedNote(note: DecryptedNote | null) {
     setSelectedNoteId(note?.id ?? null);
@@ -117,17 +116,20 @@ export function HomeScreen() {
   }
 
   async function handleSave() {
-    if (!cryptKey || !session) {
+    if (!session) {
       return;
     }
 
+    const activeLinkedKek = requireLinkedKek(linkedKeks, activeKekId);
+
     try {
-        const encryptedPayload = encryptStringWithDek(
+      const encryptedPayload = encryptStringWithDek(
         serializeNoteDocument({
           content: noteContent,
           title: noteTitle,
         }),
-        cryptKey,
+        activeLinkedKek.cryptKey,
+        activeLinkedKek.kekId,
       );
       const savedNote = selectedNoteId
         ? await updateNote({
@@ -142,7 +144,7 @@ export function HomeScreen() {
             token: session.token,
           });
 
-      const decryptedNote = decryptNoteRecord(savedNote, cryptKey);
+      const decryptedNote = decryptNoteRecord(savedNote, linkedKeks);
       const nextNotes = sortNotes([
         decryptedNote,
         ...notes.filter((note) => note.id !== decryptedNote.id),
@@ -313,8 +315,18 @@ function serializeNoteDocument(note: NoteDocument) {
   });
 }
 
-function decryptNoteRecord(note: NoteResponse, cryptKey: CryptKey): DecryptedNote {
-  const decryptedDocument = deserializeNoteDocument(decryptStringWithDek(note, cryptKey));
+function decryptNoteRecord(note: NoteResponse, linkedKeks: { cryptKey: Uint8Array; kekId: string }[]): DecryptedNote {
+  const linkedKek = linkedKeks.find((entry) => entry.kekId === note.encryptedDek.kekId);
+
+  if (!linkedKek) {
+    throw new Error(
+      `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Log in again and provide the older password for that KEK.`,
+    );
+  }
+
+  const decryptedDocument = deserializeNoteDocument(
+    decryptStringWithDek(note, linkedKek.cryptKey),
+  );
 
   return {
     content: decryptedDocument.content,
@@ -347,4 +359,21 @@ function deserializeNoteDocument(value: string): NoteDocument {
 
 function sortNotes(notes: DecryptedNote[]) {
   return [...notes].sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function requireLinkedKek(
+  linkedKeks: { cryptKey: Uint8Array; kekId: string }[],
+  activeKekId: string | null,
+) {
+  if (!activeKekId) {
+    throw new Error('No active KEK is linked on this device. Log in again.');
+  }
+
+  const linkedKek = linkedKeks.find((entry) => entry.kekId === activeKekId) ?? null;
+
+  if (!linkedKek) {
+    throw new Error('The active KEK is missing from local storage. Log in again.');
+  }
+
+  return linkedKek;
 }
