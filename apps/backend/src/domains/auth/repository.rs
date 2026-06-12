@@ -85,6 +85,19 @@ where
         .map_err(|_| AppError::internal("failed to update the auth key"))
 }
 
+pub async fn delete_user<C>(db: &C, user_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    entity::Entity::delete_many()
+        .filter(entity::Column::Id.eq(user_id))
+        .exec(db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the account"))?;
+
+    Ok(())
+}
+
 pub async fn find_api_user_by_id<C>(db: &C, api_user_id: Uuid) -> AppResult<Option<api_user_entity::Model>>
 where
     C: ConnectionTrait,

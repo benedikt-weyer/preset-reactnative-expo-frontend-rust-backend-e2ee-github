@@ -44,6 +44,16 @@ would otherwise keep that principal decryptable:
 - KEK metadata rows in `kek_metadata` scoped to that API user id
 - the API user row in `api_users`
 
+When the owner account is deleted, the backend removes everything tied to that
+account tree:
+
+- the owner user's note rows in `notes`
+- every DEK row whose `resource_id` points at one of those notes
+- every DEK row whose `user_id` matches either the owner or one of the linked API users
+- every linked API user row in `api_users`
+- every KEK metadata row for the owner and each linked API user
+- the owner row in `users`
+
 For migration bookkeeping, the backend can also compute:
 
 - the latest KEK epoch for that user
@@ -134,6 +144,7 @@ api_users ||--o{ deks : user_id
 | `POST /api/auth/rotate-password` | update the stored auth-key hash and create the next KEK epoch |
 | `GET /api/auth/linked-principals` | return the owner plus linked principals with their latest KEK public keys |
 | `GET /api/auth/kek-status` | report whether all DEKs for the user already use the newest KEK epoch |
+| `DELETE /api/auth/account` | remove the owner account and all linked api users, notes, KEKs, DEKs, and encrypted rows tied to it |
 | `GET /api/auth/api-users` | list API users for the owner account, including label ciphertext and provisioning state |
 | `POST /api/auth/api-users` | create an API user and store the initial label ciphertext plus wrapped label DEKs |
 | `GET /api/auth/api-users/{api_user_id}` | load one API user and its provisioning state |
@@ -177,4 +188,5 @@ stop
 - Clients must keep older linked KEKs locally if older ciphertext rows are still active.
 - Rotating the password is not finished until the client verifies that every DEK row was rewrapped onto the newest KEK epoch.
 - Deleting an API user must remove both note-recipient DEKs and label DEKs before deleting that principal's KEK metadata, because DEK rows reference `kek_public_key`.
+- Deleting the owner account must remove note-resource DEKs as well as principal-linked DEKs, because note ciphertext rows and linked principals fan out across the same `deks` table.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

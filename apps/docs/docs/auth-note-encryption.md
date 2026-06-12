@@ -32,6 +32,11 @@ After that cleanup, the removed API user no longer has any KEK metadata or any
 wrapped DEKs left in the database, so it cannot continue decrypting either note
 data or its own encrypted label.
 
+Owner account deletion is the wider version of that same cleanup. When the user
+deletes the account, the backend removes the owner row, every linked API user,
+all note rows, all wrapped DEKs for those notes, and every KEK metadata row that
+belongs to either the owner or one of the linked API users.
+
 ## Save flow
 
 After login or registration, the web and mobile clients keep a local keyring of

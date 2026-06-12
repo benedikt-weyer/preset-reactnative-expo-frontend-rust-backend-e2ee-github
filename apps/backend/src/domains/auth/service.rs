@@ -4,7 +4,7 @@ use axum::{
 };
 use chrono::Utc;
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
-use sea_orm::TransactionTrait;
+use sea_orm::{ConnectionTrait, TransactionTrait};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha512};
 use std::future::ready;
@@ -523,14 +523,47 @@ pub async fn delete_api_user(
         .await
         .map_err(|_| AppError::internal("failed to start the api user deletion transaction"))?;
 
-    notes::repository::delete_wrapped_deks_linked_to_principal(&transaction, api_user.id).await?;
-    repository::delete_kek_metadata_for_user(&transaction, api_user.id).await?;
-    repository::delete_api_user(&transaction, api_user.id).await?;
+    delete_api_user_records(&transaction, api_user.id).await?;
 
     transaction
         .commit()
         .await
         .map_err(|_| AppError::internal("failed to commit the api user deletion transaction"))?;
+
+    Ok(())
+}
+
+pub async fn delete_account(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+) -> AppResult<()> {
+    require_user_principal(authenticated_user)?;
+
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start the account deletion transaction"))?;
+
+    let api_users = repository::list_api_users_for_owner(&transaction, authenticated_user.owner_user_id).await?;
+
+    for api_user in api_users {
+        delete_api_user_records(&transaction, api_user.id).await?;
+    }
+
+    notes::repository::delete_notes_for_owner(&transaction, authenticated_user.owner_user_id).await?;
+    notes::repository::delete_wrapped_deks_linked_to_principal(
+        &transaction,
+        authenticated_user.owner_user_id,
+    )
+    .await?;
+    repository::delete_kek_metadata_for_user(&transaction, authenticated_user.owner_user_id).await?;
+    repository::delete_user(&transaction, authenticated_user.owner_user_id).await?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit the account deletion transaction"))?;
 
     Ok(())
 }
@@ -608,6 +641,17 @@ async fn build_auth_session(
         user_id: owner_user.id,
         email: owner_user.email.clone(),
     })
+}
+
+async fn delete_api_user_records<C>(db: &C, api_user_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    notes::repository::delete_wrapped_deks_linked_to_principal(db, api_user_id).await?;
+    repository::delete_kek_metadata_for_user(db, api_user_id).await?;
+    repository::delete_api_user(db, api_user_id).await?;
+
+    Ok(())
 }
 
 async fn build_api_user_record(

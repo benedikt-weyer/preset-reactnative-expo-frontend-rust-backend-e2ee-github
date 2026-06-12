@@ -220,6 +220,29 @@ where
     Ok(())
 }
 
+pub async fn delete_notes_for_owner<C>(db: &C, owner_user_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    let note_ids = list_note_ids_for_owner(db, owner_user_id).await?;
+
+    if !note_ids.is_empty() {
+        dek_entity::Entity::delete_many()
+            .filter(dek_entity::Column::ResourceId.is_in(note_ids))
+            .exec(db)
+            .await
+            .map_err(|_| AppError::internal("failed to delete the resource deks"))?;
+    }
+
+    entity::Entity::delete_many()
+        .filter(entity::Column::UserId.eq(owner_user_id))
+        .exec(db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the notes"))?;
+
+    Ok(())
+}
+
 pub async fn summarize_kek_usage_for_principal<C>(
     db: &C,
     principal_id: Uuid,

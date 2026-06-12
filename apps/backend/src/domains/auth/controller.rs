@@ -1,7 +1,7 @@
 use axum::{
     http::StatusCode,
     extract::{Path, State},
-    routing::{get, post},
+    routing::{delete, get, post},
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
@@ -26,6 +26,7 @@ pub fn router() -> Router<AppState> {
     .route("/api-users", get(list_api_users).post(create_api_user))
     .route("/api-users/{api_user_id}", get(get_api_user).delete(delete_api_user))
     .route("/api-users/{api_user_id}/provision", post(provision_api_user_deks))
+        .route("/account", delete(delete_account))
         .route("/rotate-password", post(rotate_password))
         .route("/register", post(register))
 }
@@ -377,6 +378,15 @@ pub async fn delete_api_user(
     authenticated_user: AuthenticatedUser,
 ) -> AppResult<StatusCode> {
     service::delete_api_user(&state, &authenticated_user, api_user_id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub async fn delete_account(
+    State(state): State<AppState>,
+    authenticated_user: AuthenticatedUser,
+) -> AppResult<StatusCode> {
+    service::delete_account(&state, &authenticated_user).await?;
 
     Ok(StatusCode::NO_CONTENT)
 }

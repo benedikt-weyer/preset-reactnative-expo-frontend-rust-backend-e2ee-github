@@ -350,6 +350,23 @@ export async function deleteApiUserRequest(
   }
 }
 
+export async function deleteAccountRequest(request: AuthenticatedApiRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/auth/account'), {
+    method: 'DELETE',
+    headers: {
+      Authorization: `Bearer ${request.token}`,
+    },
+  });
+
+  const responseBody = (await response.json().catch(() => null)) as
+    | { error?: string }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(readErrorMessage(responseBody));
+  }
+}
+
 export async function provisionApiUserDeksRequest(request: ProvisionApiUserDeksApiRequest) {
   const response = await fetch(
     buildApiUrl(

@@ -20,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import {
   createApiUserRequest,
+  deleteAccountRequest,
   deleteApiUserRequest,
   fetchApiUser,
   fetchApiUsers,
@@ -114,6 +115,7 @@ export function AuthExperience() {
   const [isHydrated, setIsHydrated] = useState(false);
   const [isCreatingApiUser, setIsCreatingApiUser] = useState(false);
   const [deletingApiUserId, setDeletingApiUserId] = useState<string | null>(null);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -324,6 +326,27 @@ export function AuthExperience() {
     setStatusMessage(
       'Signed out. Synced notes remain on the backend, and the linked KEKs stay stored for the next login.',
     );
+  }
+
+  function clearDeletedAccountState() {
+    setSession(null);
+    setActiveKekId(null);
+    setApiUserLabel('');
+    setApiUsers([]);
+    setLatestApiToken(null);
+    setPassword('');
+    setNextPassword('');
+    setOlderPasswords({});
+    setMigrationPasswords({});
+    setLinkedKeks([]);
+    setRequiredOlderKeks([]);
+    setKekMigrationStatus(null);
+    setMigrationProgress(null);
+    setApiUserProgress(null);
+    setNotes([]);
+    applySelectedNote(null);
+    localStorageAuthPersistence.clearAuthSession();
+    localStorageAuthPersistence.clearDerivedCredentials();
   }
 
   async function refreshKekMigrationStatus(
@@ -822,6 +845,39 @@ export function AuthExperience() {
     }
   }
 
+  async function handleDeleteAccount() {
+    if (!session || session.currentPrincipal.kind !== 'user') {
+      return;
+    }
+
+    const confirmed = globalThis.confirm(
+      `Delete account ${session.user.email}? This removes the user, linked api users, notes, DEKs, KEKs, and stored encrypted data.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsDeletingAccount(true);
+
+    try {
+      await deleteAccountRequest({
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+
+      clearDeletedAccountState();
+      setStatusMessage('Deleted the account and cleared the local linked key material.');
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to delete the account.',
+      );
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  }
+
   async function continueApiUserProvisioning(
     apiUser: ApiUserResponse,
     {
@@ -1050,6 +1106,32 @@ export function AuthExperience() {
                       Continue migration
                     </Button>
                   ) : null}
+                </div>
+              ) : null}
+
+              {session.currentPrincipal.kind === 'user' ? (
+                <div className="grid gap-3 rounded-[1.6rem] border border-rose-200 bg-rose-50/80 p-5">
+                  <div className="flex items-center gap-3 text-rose-950">
+                    <Trash2 className="size-5" />
+                    <p className="text-sm uppercase tracking-[0.22em] text-rose-900/80">
+                      Delete account
+                    </p>
+                  </div>
+                  <p className="text-sm leading-6 text-rose-950/80">
+                    Permanently remove the owner account together with linked api users, KEK metadata,
+                    wrapped DEKs, notes, and other encrypted rows tied to this account.
+                  </p>
+                  <Button
+                    className="border-rose-300 text-rose-950 hover:bg-rose-100"
+                    disabled={isDeletingAccount || isMigrating || isRotatingPassword || !!apiUserProgress}
+                    onClick={() => {
+                      void handleDeleteAccount();
+                    }}
+                    size="lg"
+                    variant="outline"
+                  >
+                    {isDeletingAccount ? 'Deleting account...' : 'Delete account'}
+                  </Button>
                 </div>
               ) : null}
 
