@@ -36,7 +36,7 @@ const e2ee = createE2ee({
     return sodium.crypto_hash(message);
   },
   kekSeedBytes() {
-    return 32;
+    return 64;
   },
   hashBytes() {
     return sodium.crypto_hash_BYTES;

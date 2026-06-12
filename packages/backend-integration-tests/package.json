@@ -1,0 +1,19 @@
+{
+  "name": "@repo/backend-integration-tests",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest run --config vitest.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@repo/e2ee-auth": "workspace:*",
+    "@types/node": "^24.10.0",
+    "@types/pg": "^8.15.6",
+    "pg": "^8.16.3",
+    "testcontainers": "^11.7.2",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
+  }
+}

@@ -45,6 +45,7 @@
     "format:mobile": "turbo -F mobile format",
 
     "test": "turbo test",
+    "test:integration": "turbo -F @repo/backend-integration-tests test",
     "test:web": "turbo -F web test",
     "test:backend": "turbo -F backend test",
     "test:docs": "turbo -F docs test",

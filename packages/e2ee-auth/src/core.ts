@@ -512,7 +512,7 @@ function resolveHashBytes(driver: E2eeDriver) {
 }
 
 function resolveKekSeedBytes(driver: E2eeDriver) {
-  return resolveDriverSize(driver.kekSeedBytes ?? 32);
+  return resolveDriverSize(driver.kekSeedBytes ?? 64);
 }
 
 function resolveDriverSize(value: number | (() => number)) {

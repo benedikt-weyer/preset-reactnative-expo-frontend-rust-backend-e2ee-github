@@ -19,9 +19,12 @@ vi.mock('react-native-libsodium', async () => {
 import {
   createPasswordSalt,
   decryptString,
+  decryptStringWithAsymmetricKek,
   decryptStringWithDek,
   deriveCredentials,
+  deriveKekKeyPair,
   encryptString,
+  encryptStringWithAsymmetricKek,
   encryptStringWithDek,
   normalizeEmail,
   rewrapEncryptedDek,
@@ -250,5 +253,46 @@ describe('encryptStringWithDek/decryptStringWithDek', () => {
         nextCredentials.cryptKey,
       ),
     ).toBe('secret note');
+  });
+});
+
+describe('deriveKekKeyPair', () => {
+  it('derives a stable ML-KEM keypair from the password crypt key', async () => {
+    const { cryptKey } = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      '00112233445566778899aabbccddeeff',
+    );
+
+    const first = await deriveKekKeyPair(cryptKey);
+    const second = await deriveKekKeyPair(cryptKey);
+
+    expect(first.algorithm).toBe('ml-kem-768');
+    expect(first.version).toBe(1);
+    expect(first.kekPublicKey).toMatch(/^[0-9a-f]{2368}$/);
+    expect(first.publicKeyHex).toBe(first.kekPublicKey);
+    expect(first.privateKeyHex).toMatch(/^[0-9a-f]+$/);
+    expect(first.kekPublicKey).toBe(second.kekPublicKey);
+    expect(first.privateKeyHex).toBe(second.privateKeyHex);
+  });
+});
+
+describe('encryptStringWithAsymmetricKek/decryptStringWithAsymmetricKek', () => {
+  it('round-trips plaintext with a derived ML-KEM KEK keypair', async () => {
+    const credentials = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      '00112233445566778899aabbccddeeff',
+    );
+    const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
+    const payload = await encryptStringWithAsymmetricKek('secret note', kekKeyPair.kekPublicKey);
+
+    expect(payload.encryptedDek.algorithm).toBe('ml-kem-768-encapsulated+xsalsa20-poly1305');
+    expect(payload.encryptedDek.kekPublicKey).toBe(kekKeyPair.kekPublicKey);
+    expect(payload.encryptedDek.kemCiphertextHex).toMatch(/^[0-9a-f]{2176}$/);
+    expect(payload.encryptedDek.version).toBe(3);
+    await expect(decryptStringWithAsymmetricKek(payload, credentials.cryptKey)).resolves.toBe(
+      'secret note',
+    );
   });
 });

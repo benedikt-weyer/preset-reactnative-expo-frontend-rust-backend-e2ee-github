@@ -47,7 +47,7 @@ const e2ee = createE2ee({
     return crypto_hash(message);
   },
   hashBytes: crypto_hash_BYTES,
-  kekSeedBytes: 32,
+  kekSeedBytes: 64,
   randomBytes: randombytes_buf,
   ready,
   saltBytes: crypto_pwhash_SALTBYTES,
