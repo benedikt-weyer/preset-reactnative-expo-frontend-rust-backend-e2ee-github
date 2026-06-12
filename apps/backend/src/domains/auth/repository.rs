@@ -16,7 +16,6 @@ pub struct PrincipalRecord {
     pub kind: PrincipalKind,
     pub email: Option<String>,
     pub username: Option<String>,
-    pub auth_key_hash: String,
 }
 
 #[derive(Clone, Debug)]
@@ -134,33 +133,37 @@ where
         .map_err(|_| AppError::internal("failed to query the api users"))
 }
 
+pub struct NewApiUserRecord {
+    pub id: Uuid,
+    pub owner_user_id: Uuid,
+    pub username: String,
+    pub auth_key_hash: String,
+    pub label_algorithm: String,
+    pub label_ciphertext_hex: String,
+    pub label_nonce_hex: String,
+    pub label_version: i32,
+    pub created_at: DateTimeWithTimeZone,
+    pub updated_at: DateTimeWithTimeZone,
+}
+
 pub async fn insert_api_user<C>(
     db: &C,
-    id: Uuid,
-    owner_user_id: Uuid,
-    username: String,
-    auth_key_hash: String,
-    label_algorithm: String,
-    label_ciphertext_hex: String,
-    label_nonce_hex: String,
-    label_version: i32,
-    created_at: DateTimeWithTimeZone,
-    updated_at: DateTimeWithTimeZone,
+    new_api_user: NewApiUserRecord,
 ) -> AppResult<api_user_entity::Model>
 where
     C: ConnectionTrait,
 {
     api_user_entity::ActiveModel {
-        id: Set(id),
-        user_id: Set(owner_user_id),
-        username: Set(username),
-        auth_key_hash: Set(auth_key_hash),
-        label_algorithm: Set(label_algorithm),
-        label_ciphertext_hex: Set(label_ciphertext_hex),
-        label_nonce_hex: Set(label_nonce_hex),
-        label_version: Set(label_version),
-        created_at: Set(created_at),
-        updated_at: Set(updated_at),
+        id: Set(new_api_user.id),
+        user_id: Set(new_api_user.owner_user_id),
+        username: Set(new_api_user.username),
+        auth_key_hash: Set(new_api_user.auth_key_hash),
+        label_algorithm: Set(new_api_user.label_algorithm),
+        label_ciphertext_hex: Set(new_api_user.label_ciphertext_hex),
+        label_nonce_hex: Set(new_api_user.label_nonce_hex),
+        label_version: Set(new_api_user.label_version),
+        created_at: Set(new_api_user.created_at),
+        updated_at: Set(new_api_user.updated_at),
     }
     .insert(db)
     .await
@@ -243,34 +246,6 @@ where
     Ok(latest_epoch + 1)
 }
 
-pub async fn find_principal_by_id_and_kind<C>(
-    db: &C,
-    principal_id: Uuid,
-    principal_kind: PrincipalKind,
-) -> AppResult<Option<PrincipalRecord>>
-where
-    C: ConnectionTrait,
-{
-    match principal_kind {
-        PrincipalKind::User => Ok(find_user_by_id(db, principal_id).await?.map(|user| PrincipalRecord {
-            principal_id: user.id,
-            owner_user_id: user.id,
-            kind: PrincipalKind::User,
-            email: Some(user.email),
-            username: None,
-            auth_key_hash: user.auth_key_hash,
-        })),
-        PrincipalKind::ApiUser => Ok(find_api_user_by_id(db, principal_id).await?.map(|api_user| PrincipalRecord {
-            principal_id: api_user.id,
-            owner_user_id: api_user.user_id,
-            kind: PrincipalKind::ApiUser,
-            email: None,
-            username: Some(api_user.username),
-            auth_key_hash: api_user.auth_key_hash,
-        })),
-    }
-}
-
 pub async fn list_linked_principals_for_owner<C>(
     db: &C,
     owner_user_id: Uuid,
@@ -287,7 +262,6 @@ where
         kind: PrincipalKind::User,
         email: Some(owner_user.email),
         username: None,
-        auth_key_hash: owner_user.auth_key_hash,
     }];
 
     for api_user in list_api_users_for_owner(db, owner_user_id).await? {
@@ -297,7 +271,6 @@ where
             kind: PrincipalKind::ApiUser,
             email: None,
             username: Some(api_user.username),
-            auth_key_hash: api_user.auth_key_hash,
         });
     }
 

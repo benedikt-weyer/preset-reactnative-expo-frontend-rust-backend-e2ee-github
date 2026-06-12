@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import {
@@ -57,6 +57,7 @@ export function HomeScreen() {
   const [noteContent, setNoteContent] = useState('');
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
+  const selectedNoteIdRef = useRef<string | null>(null);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
@@ -102,7 +103,9 @@ export function HomeScreen() {
 
         setNotes(decryptedNotes);
         const nextSelectedNote =
-          decryptedNotes.find((note) => note.id === selectedNoteId) ?? decryptedNotes[0] ?? null;
+          decryptedNotes.find((note) => note.id === selectedNoteIdRef.current) ??
+          decryptedNotes[0] ??
+          null;
 
         applySelectedNote(nextSelectedNote);
         setStatusMessage(
@@ -128,9 +131,10 @@ export function HomeScreen() {
     return () => {
       isMounted = false;
     };
-  }, [backendUrl, linkedKeks, session]);
+  }, [backendUrl, linkedKeks, refreshKekMigrationStatus, session]);
 
   function applySelectedNote(note: DecryptedNote | null) {
+    selectedNoteIdRef.current = note?.id ?? null;
     setSelectedNoteId(note?.id ?? null);
     setNoteTitle(note?.title ?? '');
     setNoteContent(note?.content ?? '');

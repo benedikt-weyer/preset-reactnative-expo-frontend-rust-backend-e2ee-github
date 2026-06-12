@@ -1,6 +1,7 @@
 import {
   createContext,
   ReactNode,
+  useCallback,
   useContext,
   useEffect,
   useMemo,
@@ -95,17 +96,17 @@ export function AuthProvider({ children }: AuthProviderProps) {
     };
   }, []);
 
-  async function persistPreferences(nextPreferences: AuthPreferences) {
+  const persistPreferences = useCallback(async (nextPreferences: AuthPreferences) => {
     setPreferences(nextPreferences);
     await secureStoreAuthPreferences.write(nextPreferences);
-  }
+  }, []);
 
-  async function authenticate(
+  const authenticate = useCallback(async (
     mode: 'login' | 'register',
     email: string,
     password: string,
     olderPasswords: Record<string, string> = {},
-  ) {
+  ) => {
     const backendUrl = preferences.backendUrl.trim();
     const normalizedEmail = normalizeEmail(email);
     const persistedLinkedKeks =
@@ -214,23 +215,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
       lastEmail: credentials.email,
       linkedKeks: nextLinkedKeks,
     });
-  }
+  }, [persistPreferences, preferences]);
 
-  async function updateBackendUrl(backendUrl: string) {
+  const updateBackendUrl = useCallback(async (backendUrl: string) => {
     await persistPreferences({
       ...preferences,
       backendUrl: backendUrl.trim(),
     });
-  }
+  }, [persistPreferences, preferences]);
 
-  async function persistLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
+  const persistLinkedKeks = useCallback(async (linkedKeks: PersistedLinkedKek[]) => {
     await persistPreferences({
       ...preferences,
       linkedKeks,
     });
-  }
+  }, [persistPreferences, preferences]);
 
-  async function refreshKekMigrationStatus() {
+  const refreshKekMigrationStatus = useCallback(async () => {
     if (!session) {
       setKekMigrationStatus(null);
       return null;
@@ -244,9 +245,9 @@ export function AuthProvider({ children }: AuthProviderProps) {
     setKekMigrationStatus(nextStatus);
 
     return nextStatus;
-  }
+  }, [preferences.backendUrl, session]);
 
-  async function rotatePassword(newPassword: string) {
+  const rotatePassword = useCallback(async (newPassword: string) => {
     if (!session) {
       throw new Error('Log in before rotating the password.');
     }
@@ -296,14 +297,25 @@ export function AuthProvider({ children }: AuthProviderProps) {
       linkedKeks: nextLinkedKeks,
       session: response,
     };
-  }
+  }, [persistPreferences, preferences, session]);
 
-  function signOut() {
+  const signOut = useCallback(() => {
     setSession(null);
     setActiveKekId(null);
     setKekMigrationStatus(null);
     setPendingOlderKeks([]);
-  }
+  }, []);
+
+  const login = useCallback(
+    (email: string, password: string, olderPasswords?: Record<string, string>) =>
+      authenticate('login', email, password, olderPasswords),
+    [authenticate],
+  );
+
+  const register = useCallback(
+    (email: string, password: string) => authenticate('register', email, password),
+    [authenticate],
+  );
 
   const authContextValue = useMemo(
     () => ({
@@ -314,19 +326,33 @@ export function AuthProvider({ children }: AuthProviderProps) {
       kekMigrationStatus,
       lastEmail: preferences.lastEmail,
       linkedKeks: preferences.linkedKeks ?? [],
-      login: (email: string, password: string, olderPasswords?: Record<string, string>) =>
-        authenticate('login', email, password, olderPasswords),
+      login,
       pendingOlderKeks,
       persistLinkedKeks,
       refreshKekMigrationStatus,
-      register: (email: string, password: string) =>
-        authenticate('register', email, password),
+      register,
       rotatePassword,
       session,
       signOut,
       updateBackendUrl,
     }),
-    [activeKekId, isHydrated, kekMigrationStatus, pendingOlderKeks, preferences, session],
+    [
+      activeKekId,
+      isHydrated,
+      kekMigrationStatus,
+      login,
+      pendingOlderKeks,
+      persistLinkedKeks,
+      preferences.backendUrl,
+      preferences.lastEmail,
+      preferences.linkedKeks,
+      refreshKekMigrationStatus,
+      register,
+      rotatePassword,
+      session,
+      signOut,
+      updateBackendUrl,
+    ],
   );
 
   return (

@@ -201,7 +201,6 @@ pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<A
             kind: PrincipalKind::User,
             email: Some(new_user.email.clone()),
             username: None,
-            auth_key_hash: new_user.auth_key_hash.clone(),
         },
         vec![initial_kek_metadata],
     )
@@ -250,7 +249,6 @@ pub async fn login(state: &AppState, command: LoginCommand) -> AppResult<AuthSes
             kind: PrincipalKind::User,
             email: Some(user.email.clone()),
             username: None,
-            auth_key_hash: user.auth_key_hash.clone(),
         },
         kek_metadatas,
     )
@@ -283,7 +281,6 @@ pub async fn login_api_user(
             kind: PrincipalKind::ApiUser,
             email: None,
             username: Some(api_user.username.clone()),
-            auth_key_hash: api_user.auth_key_hash.clone(),
         },
         kek_metadatas,
     )
@@ -349,7 +346,6 @@ pub async fn rotate_password(
             kind: PrincipalKind::User,
             email: Some(updated_user.email.clone()),
             username: None,
-            auth_key_hash: updated_user.auth_key_hash.clone(),
         },
         kek_metadatas,
     )
@@ -469,16 +465,22 @@ pub async fn create_api_user(
 
     let api_user = repository::insert_api_user(
         &transaction,
-        command.api_user_id,
-        authenticated_user.owner_user_id,
-        generate_api_username(command.api_user_id),
-        hash_auth_key(&command.auth_key),
-        command.encrypted_label.algorithm.trim().to_owned(),
-        command.encrypted_label.ciphertext_hex.trim().to_ascii_lowercase(),
-        command.encrypted_label.nonce_hex.trim().to_ascii_lowercase(),
-        command.encrypted_label.version,
-        now,
-        now,
+        repository::NewApiUserRecord {
+            id: command.api_user_id,
+            owner_user_id: authenticated_user.owner_user_id,
+            username: generate_api_username(command.api_user_id),
+            auth_key_hash: hash_auth_key(&command.auth_key),
+            label_algorithm: command.encrypted_label.algorithm.trim().to_owned(),
+            label_ciphertext_hex: command
+                .encrypted_label
+                .ciphertext_hex
+                .trim()
+                .to_ascii_lowercase(),
+            label_nonce_hex: command.encrypted_label.nonce_hex.trim().to_ascii_lowercase(),
+            label_version: command.encrypted_label.version,
+            created_at: now,
+            updated_at: now,
+        },
     )
     .await?;
 
