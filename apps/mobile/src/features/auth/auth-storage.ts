@@ -14,7 +14,7 @@ export type AuthPreferences = {
 export type PersistedLinkedKek = {
   cryptKey: CryptKey;
   kekEpochVersion: number;
-  kekId: string;
+  kekPublicKey: string;
   saltHex: string;
 };
 
@@ -76,7 +76,7 @@ export const secureStoreAuthPreferences: AuthPreferencesPersistence = {
           if (
             !cryptKey ||
             typeof linkedKek?.kekEpochVersion !== 'number' ||
-            typeof linkedKek?.kekId !== 'string' ||
+            typeof linkedKek?.kekPublicKey !== 'string' ||
             typeof linkedKek?.saltHex !== 'string'
           ) {
             continue;
@@ -85,7 +85,7 @@ export const secureStoreAuthPreferences: AuthPreferencesPersistence = {
           linkedKeks.push({
             cryptKey,
             kekEpochVersion: linkedKek.kekEpochVersion,
-            kekId: linkedKek.kekId.trim(),
+            kekPublicKey: linkedKek.kekPublicKey.trim(),
             saltHex: linkedKek.saltHex.trim().toLowerCase(),
           });
         }
@@ -108,7 +108,7 @@ export const secureStoreAuthPreferences: AuthPreferencesPersistence = {
       const storedLinkedKeks = (preferences.linkedKeks ?? []).map((linkedKek) => ({
         cryptKey: bytesToHex(linkedKek.cryptKey),
         kekEpochVersion: linkedKek.kekEpochVersion,
-        kekId: linkedKek.kekId.trim(),
+        kekPublicKey: linkedKek.kekPublicKey.trim(),
         saltHex: linkedKek.saltHex.trim().toLowerCase(),
       }));
 

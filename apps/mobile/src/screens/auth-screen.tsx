@@ -111,18 +111,18 @@ export function AuthScreen() {
               <LabeledInput
                 autoCapitalize="none"
                 autoComplete="password"
-                key={metadata.kekId}
+                key={metadata.kekPublicKey}
                 label={`Older password v${metadata.kekEpochVersion}`}
                 onChangeText={(value) =>
                   setOlderPasswords((currentPasswords) => ({
                     ...currentPasswords,
-                    [metadata.kekId]: value,
+                    [metadata.kekPublicKey]: value,
                   }))
                 }
                 placeholder="Type the older password for this active KEK"
                 secureTextEntry
                 themeMode={themeMode}
-                value={olderPasswords[metadata.kekId] ?? ''}
+                value={olderPasswords[metadata.kekPublicKey] ?? ''}
               />
             ))
           : null}

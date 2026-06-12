@@ -151,7 +151,9 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
       return;
     }
 
-    const { authSession: _authSession, ...nextPreferences } = storedPreferences;
+    const nextPreferences = { ...storedPreferences };
+
+    delete nextPreferences.authSession;
 
     writeStoredPreferences(nextPreferences);
   },
@@ -162,7 +164,9 @@ export const localStorageAuthPersistence: AuthPersistenceAdapter = {
       return;
     }
 
-    const { derivedCredentials: _derivedCredentials, ...nextPreferences } = storedPreferences;
+    const nextPreferences = { ...storedPreferences };
+
+    delete nextPreferences.derivedCredentials;
 
     writeStoredPreferences(nextPreferences);
   },

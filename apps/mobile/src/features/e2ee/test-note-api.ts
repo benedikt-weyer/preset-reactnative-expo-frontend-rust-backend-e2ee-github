@@ -160,12 +160,14 @@ function isWrappedDekPayload(value: unknown): value is KekAsymmetricDekEncrypted
   return !!value &&
     typeof value === 'object' &&
     'algorithm' in value &&
-    'kekId' in value &&
+    'kemCiphertextHex' in value &&
+    'kekPublicKey' in value &&
     'nonceHex' in value &&
     'version' in value &&
     'wrappedDekHex' in value &&
     typeof value.algorithm === 'string' &&
-    typeof value.kekId === 'string' &&
+    typeof value.kemCiphertextHex === 'string' &&
+    typeof value.kekPublicKey === 'string' &&
     typeof value.nonceHex === 'string' &&
     typeof value.version === 'number' &&
     typeof value.wrappedDekHex === 'string';

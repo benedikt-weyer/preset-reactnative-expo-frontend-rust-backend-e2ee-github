@@ -63,7 +63,9 @@ export function HomeScreen() {
   const [statusMessage, setStatusMessage] = useState('');
 
   const missingMigrationKeks = session
-    ? session.kekMetadatas.filter((metadata) => !linkedKeks.some((entry) => entry.kekId === metadata.kekId))
+    ? session.kekMetadatas.filter(
+        (metadata) => !linkedKeks.some((entry) => entry.kekPublicKey === metadata.kekPublicKey),
+      )
     : [];
   const needsMigration =
     !!session &&
@@ -159,7 +161,7 @@ export function HomeScreen() {
           content: noteContent,
           title: noteTitle,
         }),
-        activeLinkedKek.cryptKey,
+        activeLinkedKek.kekPublicKey,
       );
       const savedNote = selectedNoteId
         ? await updateNote({
@@ -260,7 +262,7 @@ export function HomeScreen() {
       baseLinkedKeks,
       email: activeSession.user.email,
       missingMetadatas: activeSession.kekMetadatas.filter(
-        (metadata) => !baseLinkedKeks.some((entry) => entry.kekId === metadata.kekId),
+        (metadata) => !baseLinkedKeks.some((entry) => entry.kekPublicKey === metadata.kekPublicKey),
       ),
       passwordsByKekId: migrationPasswords,
     });
@@ -270,7 +272,7 @@ export function HomeScreen() {
       token: activeSession.token,
     });
     const notesToRewrap = remoteNotes.filter(
-      (note) => note.encryptedDek.kekId !== latestLinkedKek.kekId,
+      (note) => note.encryptedDek.kekPublicKey !== latestLinkedKek.kekPublicKey,
     );
 
     setIsMigrating(true);
@@ -280,12 +282,12 @@ export function HomeScreen() {
       for (let index = 0; index < notesToRewrap.length; index += 1) {
         const note = notesToRewrap[index];
         const currentLinkedKek = workingLinkedKeks.find(
-          (entry) => entry.kekId === note.encryptedDek.kekId,
+          (entry) => entry.kekPublicKey === note.encryptedDek.kekPublicKey,
         );
 
         if (!currentLinkedKek) {
           throw new Error(
-            `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Provide the matching older password first.`,
+            `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekPublicKey}. Provide the matching older password first.`,
           );
         }
 
@@ -296,7 +298,7 @@ export function HomeScreen() {
             encryptedDek: await rewrapAsymmetricEncryptedDek(
               note,
               currentLinkedKek.cryptKey,
-              latestLinkedKek.cryptKey,
+              latestLinkedKek.kekPublicKey,
             ),
             encryptedPayload: note.encryptedPayload,
           },
@@ -384,17 +386,17 @@ export function HomeScreen() {
             <TextInput
               autoCapitalize="none"
               className={`rounded-[22px] border px-4 py-3 text-base ${tokens.card} ${tokens.title}`}
-              key={metadata.kekId}
+                key={metadata.kekPublicKey}
               onChangeText={(value) =>
                 setMigrationPasswords((currentPasswords) => ({
                   ...currentPasswords,
-                  [metadata.kekId]: value,
+                    [metadata.kekPublicKey]: value,
                 }))
               }
               placeholder={`Type the password for KEK epoch ${metadata.kekEpochVersion}`}
               placeholderTextColor={themeMode === 'dark' ? '#94a3b8' : '#78716c'}
               secureTextEntry
-              value={migrationPasswords[metadata.kekId] ?? ''}
+                value={migrationPasswords[metadata.kekPublicKey] ?? ''}
             />
           ))}
           {migrationProgress ? (
@@ -535,12 +537,15 @@ function serializeNoteDocument(note: NoteDocument) {
   });
 }
 
-async function decryptNoteRecord(note: NoteResponse, linkedKeks: { cryptKey: Uint8Array; kekId: string }[]): Promise<DecryptedNote> {
-  const linkedKek = linkedKeks.find((entry) => entry.kekId === note.encryptedDek.kekId);
+async function decryptNoteRecord(
+  note: NoteResponse,
+  linkedKeks: { cryptKey: Uint8Array; kekPublicKey: string }[],
+): Promise<DecryptedNote> {
+  const linkedKek = linkedKeks.find((entry) => entry.kekPublicKey === note.encryptedDek.kekPublicKey);
 
   if (!linkedKek) {
     throw new Error(
-      `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Log in again and provide the older password for that KEK.`,
+      `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekPublicKey}. Log in again and provide the older password for that KEK.`,
     );
   }
 
@@ -582,14 +587,14 @@ function sortNotes(notes: DecryptedNote[]) {
 }
 
 function requireLinkedKek(
-  linkedKeks: { cryptKey: Uint8Array; kekId: string }[],
+  linkedKeks: { cryptKey: Uint8Array; kekPublicKey: string }[],
   activeKekId: string | null,
 ) {
   if (!activeKekId) {
     throw new Error('No active KEK is linked on this device. Log in again.');
   }
 
-  const linkedKek = linkedKeks.find((entry) => entry.kekId === activeKekId) ?? null;
+  const linkedKek = linkedKeks.find((entry) => entry.kekPublicKey === activeKekId) ?? null;
 
   if (!linkedKek) {
     throw new Error('The active KEK is missing from local storage. Log in again.');
@@ -604,9 +609,9 @@ async function deriveMissingLinkedKeks({
   missingMetadatas,
   passwordsByKekId,
 }: {
-  baseLinkedKeks: { cryptKey: Uint8Array; kekEpochVersion: number; kekId: string; saltHex: string }[];
+  baseLinkedKeks: { cryptKey: Uint8Array; kekEpochVersion: number; kekPublicKey: string; saltHex: string }[];
   email: string;
-  missingMetadatas: { kekEpochVersion: number; kekId: string }[];
+  missingMetadatas: { kekEpochVersion: number; kekPublicKey: string }[];
   passwordsByKekId: Record<string, string>;
 }) {
   if (missingMetadatas.length === 0) {
@@ -622,7 +627,7 @@ async function deriveMissingLinkedKeks({
   const linkedKeks = [...baseLinkedKeks];
 
   for (const metadata of missingMetadatas) {
-    const password = passwordsByKekId[metadata.kekId]?.trim();
+    const password = passwordsByKekId[metadata.kekPublicKey]?.trim();
 
     if (!password) {
       throw new Error(
@@ -635,7 +640,7 @@ async function deriveMissingLinkedKeks({
     linkedKeks.push({
       cryptKey: credentials.cryptKey,
       kekEpochVersion: metadata.kekEpochVersion,
-      kekId: metadata.kekId,
+      kekPublicKey: metadata.kekPublicKey,
       saltHex,
     });
   }

@@ -130,8 +130,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
       mode === 'login'
         ? sortedKekMetadatas.slice(1).filter(
             (metadata) =>
-              !findLinkedKek(persistedLinkedKeks, metadata.kekId) &&
-              !olderPasswords[metadata.kekId]?.trim(),
+              !findLinkedKek(persistedLinkedKeks, metadata.kekPublicKey) &&
+              !olderPasswords[metadata.kekPublicKey]?.trim(),
           )
         : [];
 
@@ -156,7 +156,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
             authKey: credentials.authKey,
             baseUrl: backendUrl,
             email: credentials.email,
-            kekId: registerKekKeyPair!.kekId,
+            kekPublicKey: registerKekKeyPair!.kekPublicKey,
             saltHex,
           });
     const responseKekMetadatas = sortKekMetadatas(response.kekMetadatas);
@@ -167,23 +167,23 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
 
     const retainedLinkedKeks = persistedLinkedKeks.filter((linkedKek) =>
-      responseKekMetadatas.some((metadata) => metadata.kekId === linkedKek.kekId),
+      responseKekMetadatas.some((metadata) => metadata.kekPublicKey === linkedKek.kekPublicKey),
     );
     const nextDerivedLinkedKeks: PersistedLinkedKek[] = [
       {
         cryptKey: credentials.cryptKey,
         kekEpochVersion: latestKekMetadata.kekEpochVersion,
-        kekId: latestKekMetadata.kekId,
+        kekPublicKey: latestKekMetadata.kekPublicKey,
         saltHex,
       },
     ];
 
     for (const metadata of responseKekMetadatas.slice(1)) {
-      if (findLinkedKek(retainedLinkedKeks, metadata.kekId)) {
+      if (findLinkedKek(retainedLinkedKeks, metadata.kekPublicKey)) {
         continue;
       }
 
-      const olderPassword = olderPasswords[metadata.kekId]?.trim();
+      const olderPassword = olderPasswords[metadata.kekPublicKey]?.trim();
 
       if (!olderPassword) {
         continue;
@@ -194,7 +194,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       nextDerivedLinkedKeks.push({
         cryptKey: olderCredentials.cryptKey,
         kekEpochVersion: metadata.kekEpochVersion,
-        kekId: metadata.kekId,
+        kekPublicKey: metadata.kekPublicKey,
         saltHex,
       });
     }
@@ -205,7 +205,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     ]);
 
     setSession(response);
-    setActiveKekId(latestKekMetadata.kekId);
+    setActiveKekId(latestKekMetadata.kekPublicKey);
     setPendingOlderKeks(responseKekMetadatas.slice(1));
 
     await persistPreferences({
@@ -261,7 +261,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
     const response = await rotatePasswordRequest({
       baseUrl: preferences.backendUrl,
-      kekId: kekKeyPair.kekId,
+      kekPublicKey: kekKeyPair.kekPublicKey,
       newAuthKey: credentials.authKey,
       token: session.token,
     });
@@ -276,13 +276,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
       {
         cryptKey: credentials.cryptKey,
         kekEpochVersion: latestKekMetadata.kekEpochVersion,
-        kekId: latestKekMetadata.kekId,
+        kekPublicKey: latestKekMetadata.kekPublicKey,
         saltHex,
       },
     ]);
 
     setSession(response);
-    setActiveKekId(latestKekMetadata.kekId);
+    setActiveKekId(latestKekMetadata.kekPublicKey);
     setPendingOlderKeks(response.kekMetadatas.slice(1));
     await persistPreferences({
       ...preferences,
@@ -292,7 +292,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
     });
 
     return {
-      activeKekId: latestKekMetadata.kekId,
+      activeKekId: latestKekMetadata.kekPublicKey,
       linkedKeks: nextLinkedKeks,
       session: response,
     };
@@ -342,18 +342,18 @@ function sortKekMetadatas(kekMetadatas: KekMetadata[]) {
   );
 }
 
-function findLinkedKek(linkedKeks: PersistedLinkedKek[], kekId: string) {
-  return linkedKeks.find((linkedKek) => linkedKek.kekId === kekId) ?? null;
+function findLinkedKek(linkedKeks: PersistedLinkedKek[], kekPublicKey: string) {
+  return linkedKeks.find((linkedKek) => linkedKek.kekPublicKey === kekPublicKey) ?? null;
 }
 
 function mergeLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
-  const entriesByKekId = new Map<string, PersistedLinkedKek>();
+  const entriesByKekPublicKey = new Map<string, PersistedLinkedKek>();
 
   for (const linkedKek of linkedKeks) {
-    entriesByKekId.set(linkedKek.kekId, linkedKek);
+    entriesByKekPublicKey.set(linkedKek.kekPublicKey, linkedKek);
   }
 
-  return [...entriesByKekId.values()].sort(
+  return [...entriesByKekPublicKey.values()].sort(
     (left, right) => right.kekEpochVersion - left.kekEpochVersion,
   );
 }

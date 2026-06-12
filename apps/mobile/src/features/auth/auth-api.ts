@@ -10,7 +10,7 @@ type AuthenticatedApiRequest = {
 
 export type KekMetadata = {
   kekEpochVersion: number;
-  kekId: string;
+  kekPublicKey: string;
 };
 
 export type LoginApiRequest = BaseAuthApiRequest & {
@@ -18,7 +18,7 @@ export type LoginApiRequest = BaseAuthApiRequest & {
 };
 
 export type RegisterApiRequest = LoginApiRequest & {
-  kekId: string;
+  kekPublicKey: string;
   saltHex: string;
 };
 
@@ -38,7 +38,7 @@ export type PasswordSaltResponse = {
 };
 
 export type RotatePasswordApiRequest = AuthenticatedApiRequest & {
-  kekId: string;
+  kekPublicKey: string;
   newAuthKey: string;
 };
 
@@ -46,7 +46,7 @@ export type KekMigrationStatusResponse = {
   allDeksUseLatestKek: boolean;
   latestKekDekCount: number;
   latestKekEpochVersion: number;
-  latestKekId: string;
+  latestKekPublicKey: string;
   pendingDekCount: number;
   totalDekCount: number;
 };
@@ -94,7 +94,7 @@ export async function rotatePasswordRequest(request: RotatePasswordApiRequest) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
-      kekId: request.kekId,
+      kekPublicKey: request.kekPublicKey,
       newAuthKey: request.newAuthKey,
     }),
   });
@@ -151,7 +151,7 @@ async function postAuthRequest(
     body: JSON.stringify({
       authKey: request.authKey,
       email: request.email,
-      ...('kekId' in request ? { kekId: request.kekId } : {}),
+      ...('kekPublicKey' in request ? { kekPublicKey: request.kekPublicKey } : {}),
       ...('saltHex' in request ? { saltHex: request.saltHex } : {}),
     }),
   });
@@ -205,9 +205,9 @@ function isKekMetadata(value: unknown): value is KekMetadata {
   return !!value &&
     typeof value === 'object' &&
     'kekEpochVersion' in value &&
-    'kekId' in value &&
+    'kekPublicKey' in value &&
     typeof value.kekEpochVersion === 'number' &&
-    typeof value.kekId === 'string';
+    typeof value.kekPublicKey === 'string';
 }
 
 function isKekMigrationStatusResponse(value: unknown): value is KekMigrationStatusResponse {
@@ -216,13 +216,13 @@ function isKekMigrationStatusResponse(value: unknown): value is KekMigrationStat
     'allDeksUseLatestKek' in value &&
     'latestKekDekCount' in value &&
     'latestKekEpochVersion' in value &&
-    'latestKekId' in value &&
+    'latestKekPublicKey' in value &&
     'pendingDekCount' in value &&
     'totalDekCount' in value &&
     typeof value.allDeksUseLatestKek === 'boolean' &&
     typeof value.latestKekDekCount === 'number' &&
     typeof value.latestKekEpochVersion === 'number' &&
-    typeof value.latestKekId === 'string' &&
+    typeof value.latestKekPublicKey === 'string' &&
     typeof value.pendingDekCount === 'number' &&
     typeof value.totalDekCount === 'number';
 }

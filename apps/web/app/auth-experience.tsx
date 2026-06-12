@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, LockKeyhole, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 
 import {
@@ -13,7 +13,6 @@ import {
   encryptStringWithAsymmetricKeks,
   normalizeEmail,
   rewrapAsymmetricEncryptedDek,
-  type CryptKey,
   type KekAsymmetricDekEncryptedPayload,
 } from '@repo/e2ee-auth/web';
 
@@ -35,7 +34,6 @@ import {
   type AuthApiResponse,
   type KekMigrationStatusResponse,
   type KekMetadata,
-  type LinkedPrincipal,
 } from '@/lib/auth-api';
 import {
   createNote,
@@ -102,7 +100,6 @@ export function AuthExperience() {
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [session, setSession] = useState<AuthApiResponse | null>(null);
   const [linkedKeks, setLinkedKeks] = useState<PersistedLinkedKek[]>([]);
-  const [activeKekId, setActiveKekId] = useState<string | null>(null);
   const [olderPasswords, setOlderPasswords] = useState<Record<string, string>>({});
   const [migrationPasswords, setMigrationPasswords] = useState<Record<string, string>>({});
   const [requiredOlderKeks, setRequiredOlderKeks] = useState<KekMetadata[]>([]);
@@ -119,6 +116,103 @@ export function AuthExperience() {
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const selectedNoteIdRef = useRef<string | null>(null);
+
+  const applySelectedNote = useCallback((note: DecryptedNote | null) => {
+    const nextSelectedNoteId = note?.id ?? null;
+
+    selectedNoteIdRef.current = nextSelectedNoteId;
+    setSelectedNoteId(nextSelectedNoteId);
+    setNoteTitle(note?.title ?? '');
+    setNoteContent(note?.content ?? '');
+  }, []);
+
+  const loadNotes = useCallback(
+    async ({
+      emptyMessage,
+      linkedKeks,
+      token,
+      trimmedBackendUrl,
+    }: {
+      emptyMessage: string;
+      linkedKeks: PersistedLinkedKek[];
+      token: string;
+      trimmedBackendUrl: string;
+    }) => {
+      try {
+        const remoteNotes = await fetchNotes({
+          baseUrl: trimmedBackendUrl,
+          token,
+        });
+        const decryptedNotes = sortNotes(
+          await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
+        );
+
+        setNotes(decryptedNotes);
+
+        const nextSelectedNote =
+          decryptedNotes.find((note) => note.id === selectedNoteIdRef.current) ??
+          decryptedNotes[0] ??
+          null;
+
+        applySelectedNote(nextSelectedNote);
+        const noteCountLabel =
+          decryptedNotes.length === 1
+            ? 'Loaded 1 encrypted note from the backend.'
+            : `Loaded ${decryptedNotes.length} encrypted notes from the backend.`;
+
+        setStatusMessage(nextSelectedNote ? noteCountLabel : emptyMessage);
+      } catch (error) {
+        setNotes([]);
+        applySelectedNote(null);
+        setStatusMessage(
+          error instanceof Error ? error.message : 'Unable to load encrypted notes.',
+        );
+      }
+    },
+    [applySelectedNote],
+  );
+
+  const loadApiUsers = useCallback(
+    async ({
+      linkedKeks,
+      token,
+      trimmedBackendUrl,
+    }: {
+      linkedKeks: PersistedLinkedKek[];
+      token: string;
+      trimmedBackendUrl: string;
+    }) => {
+      try {
+        const remoteApiUsers = await fetchApiUsers({
+          baseUrl: trimmedBackendUrl,
+          token,
+        });
+        const decryptedApiUsers = await Promise.all(
+          remoteApiUsers.map((apiUser) => decryptApiUserRecord(apiUser, linkedKeks)),
+        );
+
+        setApiUsers(decryptedApiUsers);
+      } catch {
+        setApiUsers([]);
+      }
+    },
+    [],
+  );
+
+  const refreshKekMigrationStatus = useCallback(
+    async (nextSession: AuthApiResponse, trimmedBackendUrl: string) => {
+      const nextStatus = await fetchKekMigrationStatus({
+        baseUrl: trimmedBackendUrl,
+        token: nextSession.token,
+      });
+
+      setKekMigrationStatus(nextStatus);
+
+      return nextStatus;
+    },
+    [],
+  );
 
   useEffect(() => {
     queueMicrotask(() => {
@@ -131,42 +225,46 @@ export function AuthExperience() {
       setLinkedKeks(nextLinkedKeks);
       setSession(storedSession);
       setEmail(storedCredentials?.email ?? preferences.lastEmail);
-      setActiveKekId(resolveActiveKekId(storedSession, nextLinkedKeks));
 
       setIsHydrated(true);
     });
   }, []);
 
   useEffect(() => {
-    if (!isHydrated) {
+    if (!isHydrated || !session || linkedKeks.length === 0) {
       return;
     }
 
-    if (!session || linkedKeks.length === 0) {
-      setApiUsers([]);
-      setNotes([]);
-      applySelectedNote(null);
-      setKekMigrationStatus(null);
-      return;
-    }
+    let isCancelled = false;
+    const trimmedBackendUrl = backendUrl.trim();
 
-    void loadNotes({
-      emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
-      linkedKeks,
-      token: session.token,
-      trimmedBackendUrl: backendUrl.trim(),
-    });
-    if (session.currentPrincipal.kind === 'user') {
-      void loadApiUsers({
+    queueMicrotask(() => {
+      if (isCancelled) {
+        return;
+      }
+
+      void loadNotes({
+        emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
         linkedKeks,
         token: session.token,
-        trimmedBackendUrl: backendUrl.trim(),
+        trimmedBackendUrl,
       });
-    } else {
-      setApiUsers([]);
-    }
-    void refreshKekMigrationStatus(session, backendUrl.trim());
-  }, [activeKekId, backendUrl, isHydrated, linkedKeks, session]);
+
+      if (session.currentPrincipal.kind === 'user') {
+        void loadApiUsers({
+          linkedKeks,
+          token: session.token,
+          trimmedBackendUrl,
+        });
+      }
+
+      void refreshKekMigrationStatus(session, trimmedBackendUrl);
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [backendUrl, isHydrated, linkedKeks, loadApiUsers, loadNotes, refreshKekMigrationStatus, session]);
 
   const missingMigrationKeks = session
     ? session.kekMetadatas.filter((metadata) => !findLinkedKek(linkedKeks, metadata.kekPublicKey))
@@ -278,10 +376,14 @@ export function AuthExperience() {
 
       setSession(response);
       setLinkedKeks(nextLinkedKeks);
-      setActiveKekId(latestKekMetadata.kekPublicKey);
       setEmail(credentials.email);
       setPassword('');
       setOlderPasswords({});
+
+      if (response.currentPrincipal.kind !== 'user') {
+        setApiUsers([]);
+      }
+
       writeAuthPreferences({
         backendUrl: trimmedBackendUrl,
         lastEmail: credentials.email,
@@ -312,7 +414,6 @@ export function AuthExperience() {
 
   function handleSignOut() {
     setSession(null);
-    setActiveKekId(null);
     setApiUserLabel('');
     setApiUsers([]);
     setLatestApiToken(null);
@@ -330,7 +431,6 @@ export function AuthExperience() {
 
   function clearDeletedAccountState() {
     setSession(null);
-    setActiveKekId(null);
     setApiUserLabel('');
     setApiUsers([]);
     setLatestApiToken(null);
@@ -347,20 +447,6 @@ export function AuthExperience() {
     applySelectedNote(null);
     localStorageAuthPersistence.clearAuthSession();
     localStorageAuthPersistence.clearDerivedCredentials();
-  }
-
-  async function refreshKekMigrationStatus(
-    nextSession: AuthApiResponse,
-    trimmedBackendUrl: string,
-  ) {
-    const nextStatus = await fetchKekMigrationStatus({
-      baseUrl: trimmedBackendUrl,
-      token: nextSession.token,
-    });
-
-    setKekMigrationStatus(nextStatus);
-
-    return nextStatus;
   }
 
   async function handleRotatePassword() {
@@ -404,7 +490,6 @@ export function AuthExperience() {
 
       setSession(response);
       setLinkedKeks(nextLinkedKeks);
-      setActiveKekId(latestKekMetadata.kekPublicKey);
       setNextPassword('');
       localStorageAuthPersistence.writeAuthSession(response);
       localStorageAuthPersistence.writeDerivedCredentials({
@@ -552,76 +637,6 @@ export function AuthExperience() {
       setIsMigrating(false);
       setMigrationProgress(null);
     }
-  }
-
-  async function loadNotes({
-    emptyMessage,
-    linkedKeks,
-    token,
-    trimmedBackendUrl,
-  }: {
-    emptyMessage: string;
-    linkedKeks: PersistedLinkedKek[];
-    token: string;
-    trimmedBackendUrl: string;
-  }) {
-    try {
-      const remoteNotes = await fetchNotes({
-        baseUrl: trimmedBackendUrl,
-        token,
-      });
-      const decryptedNotes = sortNotes(
-        await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
-      );
-
-      setNotes(decryptedNotes);
-
-      const nextSelectedNote =
-        decryptedNotes.find((note) => note.id === selectedNoteId) ?? decryptedNotes[0] ?? null;
-
-      applySelectedNote(nextSelectedNote);
-      setStatusMessage(
-        nextSelectedNote
-          ? `Loaded ${decryptedNotes.length} encrypted note${decryptedNotes.length === 1 ? '' : 's'} from the backend.`
-          : emptyMessage,
-      );
-    } catch (error) {
-      setNotes([]);
-      applySelectedNote(null);
-      setStatusMessage(
-        error instanceof Error ? error.message : 'Unable to load encrypted notes.',
-      );
-    }
-  }
-
-  async function loadApiUsers({
-    linkedKeks,
-    token,
-    trimmedBackendUrl,
-  }: {
-    linkedKeks: PersistedLinkedKek[];
-    token: string;
-    trimmedBackendUrl: string;
-  }) {
-    try {
-      const remoteApiUsers = await fetchApiUsers({
-        baseUrl: trimmedBackendUrl,
-        token,
-      });
-      const decryptedApiUsers = await Promise.all(
-        remoteApiUsers.map((apiUser) => decryptApiUserRecord(apiUser, linkedKeks)),
-      );
-
-      setApiUsers(decryptedApiUsers);
-    } catch {
-      setApiUsers([]);
-    }
-  }
-
-  function applySelectedNote(note: DecryptedNote | null) {
-    setSelectedNoteId(note?.id ?? null);
-    setNoteTitle(note?.title ?? '');
-    setNoteContent(note?.content ?? '');
   }
 
   function handleCreateNote() {
@@ -1614,21 +1629,6 @@ function requireLinkedKek(linkedKeks: PersistedLinkedKek[], activeKekId: string 
   }
 
   return linkedKek;
-}
-
-function resolveActiveKekId(
-  session: AuthApiResponse | null,
-  linkedKeks: PersistedLinkedKek[],
-) {
-  const sortedMetadatas = sortKekMetadatas(session?.kekMetadatas ?? []);
-
-  for (const metadata of sortedMetadatas) {
-    if (findLinkedKek(linkedKeks, metadata.kekPublicKey)) {
-      return metadata.kekPublicKey;
-    }
-  }
-
-  return linkedKeks[0]?.kekPublicKey ?? null;
 }
 
 function formatTimestamp(value: string) {
