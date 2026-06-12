@@ -15,9 +15,12 @@ import {
 
 import {
   fetchPasswordSalt,
+  fetchKekMigrationStatus,
   loginRequest,
+  rotatePasswordRequest,
   registerRequest,
   type AuthApiResponse,
+  type KekMigrationStatusResponse,
   type KekMetadata,
 } from './auth-api';
 import {
@@ -33,11 +36,19 @@ type AuthContextValue = {
   backendUrl: string;
   isAuthenticated: boolean;
   isHydrated: boolean;
+  kekMigrationStatus: KekMigrationStatusResponse | null;
   lastEmail: string;
   linkedKeks: PersistedLinkedKek[];
   login: (email: string, password: string, olderPasswords?: Record<string, string>) => Promise<void>;
   pendingOlderKeks: KekMetadata[];
+  persistLinkedKeks: (linkedKeks: PersistedLinkedKek[]) => Promise<void>;
+  refreshKekMigrationStatus: () => Promise<KekMigrationStatusResponse | null>;
   register: (email: string, password: string) => Promise<void>;
+  rotatePassword: (newPassword: string) => Promise<{
+    activeKekId: string;
+    linkedKeks: PersistedLinkedKek[];
+    session: Session;
+  }>;
   session: Session | null;
   signOut: () => void;
   updateBackendUrl: (backendUrl: string) => Promise<void>;
@@ -58,6 +69,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
   });
   const [session, setSession] = useState<Session | null>(null);
   const [activeKekId, setActiveKekId] = useState<string | null>(null);
+  const [kekMigrationStatus, setKekMigrationStatus] = useState<KekMigrationStatusResponse | null>(null);
   const [pendingOlderKeks, setPendingOlderKeks] = useState<KekMetadata[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
 
@@ -207,9 +219,83 @@ export function AuthProvider({ children }: AuthProviderProps) {
     });
   }
 
+  async function persistLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
+    await persistPreferences({
+      ...preferences,
+      linkedKeks,
+    });
+  }
+
+  async function refreshKekMigrationStatus() {
+    if (!session) {
+      setKekMigrationStatus(null);
+      return null;
+    }
+
+    const nextStatus = await fetchKekMigrationStatus({
+      baseUrl: preferences.backendUrl,
+      token: session.token,
+    });
+
+    setKekMigrationStatus(nextStatus);
+
+    return nextStatus;
+  }
+
+  async function rotatePassword(newPassword: string) {
+    if (!session) {
+      throw new Error('Log in before rotating the password.');
+    }
+
+    const saltHex = preferences.linkedKeks?.[0]?.saltHex;
+
+    if (!saltHex) {
+      throw new Error('The current password salt is missing from local storage. Log in again.');
+    }
+
+    const credentials = await deriveCredentials(session.user.email, newPassword, saltHex);
+    const response = await rotatePasswordRequest({
+      baseUrl: preferences.backendUrl,
+      newAuthKey: credentials.authKey,
+      token: session.token,
+    });
+    const latestKekMetadata = sortKekMetadatas(response.kekMetadatas)[0];
+
+    if (!latestKekMetadata) {
+      throw new Error('The backend did not return KEK metadata.');
+    }
+
+    const nextLinkedKeks = mergeLinkedKeks([
+      ...(preferences.linkedKeks ?? []),
+      {
+        cryptKey: credentials.cryptKey,
+        kekEpochVersion: latestKekMetadata.kekEpochVersion,
+        kekId: latestKekMetadata.kekId,
+        saltHex,
+      },
+    ]);
+
+    setSession(response);
+    setActiveKekId(latestKekMetadata.kekId);
+    setPendingOlderKeks(response.kekMetadatas.slice(1));
+    await persistPreferences({
+      ...preferences,
+      email: session.user.email,
+      linkedKeks: nextLinkedKeks,
+      lastEmail: session.user.email,
+    });
+
+    return {
+      activeKekId: latestKekMetadata.kekId,
+      linkedKeks: nextLinkedKeks,
+      session: response,
+    };
+  }
+
   function signOut() {
     setSession(null);
     setActiveKekId(null);
+    setKekMigrationStatus(null);
     setPendingOlderKeks([]);
   }
 
@@ -219,18 +305,22 @@ export function AuthProvider({ children }: AuthProviderProps) {
       backendUrl: preferences.backendUrl,
       isAuthenticated: session !== null && activeKekId !== null,
       isHydrated,
+      kekMigrationStatus,
       lastEmail: preferences.lastEmail,
       linkedKeks: preferences.linkedKeks ?? [],
       login: (email: string, password: string, olderPasswords?: Record<string, string>) =>
         authenticate('login', email, password, olderPasswords),
       pendingOlderKeks,
+      persistLinkedKeks,
+      refreshKekMigrationStatus,
       register: (email: string, password: string) =>
         authenticate('register', email, password),
+      rotatePassword,
       session,
       signOut,
       updateBackendUrl,
     }),
-    [activeKekId, isHydrated, pendingOlderKeks, preferences, session],
+    [activeKekId, isHydrated, kekMigrationStatus, pendingOlderKeks, preferences, session],
   );
 
   return (

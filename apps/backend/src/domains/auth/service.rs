@@ -13,7 +13,10 @@ use uuid::Uuid;
 
 use crate::{
     app_state::AppState,
-    domains::auth::{entity, kek_metadata_entity, repository},
+    domains::{
+        auth::{entity, kek_metadata_entity, repository},
+        notes,
+    },
     error::{AppError, AppResult},
 };
 
@@ -28,6 +31,10 @@ pub struct LoginCommand {
     pub auth_key: String,
 }
 
+pub struct RotatePasswordCommand {
+    pub new_auth_key: String,
+}
+
 pub struct AuthSession {
     pub kek_metadatas: Vec<KekMetadata>,
     pub token: String,
@@ -39,6 +46,15 @@ pub struct AuthSession {
 pub struct SaltMaterial {
     pub kek_metadatas: Vec<KekMetadata>,
     pub salt_hex: String,
+}
+
+pub struct KekMigrationStatus {
+    pub all_deks_use_latest_kek: bool,
+    pub latest_kek_dek_count: u64,
+    pub latest_kek_epoch_version: i32,
+    pub latest_kek_id: Uuid,
+    pub pending_dek_count: u64,
+    pub total_dek_count: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +167,81 @@ pub async fn login(state: &AppState, command: LoginCommand) -> AppResult<AuthSes
     let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, user.id).await?;
 
     build_auth_session(state, &user, kek_metadatas)
+}
+
+pub async fn rotate_password(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+    command: RotatePasswordCommand,
+) -> AppResult<AuthSession> {
+    validate_auth_key(&command.new_auth_key)?;
+
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start the auth transaction"))?;
+    let user = repository::find_user_by_id(&transaction, authenticated_user.user_id)
+        .await?
+        .ok_or_else(|| AppError::unauthorized("invalid bearer token"))?;
+    let next_epoch_version =
+        repository::next_kek_epoch_version_for_user(&transaction, authenticated_user.user_id)
+            .await?;
+    let now = Utc::now().fixed_offset();
+
+    let updated_user = repository::update_user_auth_key_hash(
+        &transaction,
+        user,
+        hash_auth_key(&command.new_auth_key),
+    )
+    .await?;
+    repository::insert_kek_metadata(
+        &transaction,
+        authenticated_user.user_id,
+        next_epoch_version,
+        now,
+    )
+    .await?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit the auth transaction"))?;
+
+    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, authenticated_user.user_id)
+        .await?;
+
+    build_auth_session(state, &updated_user, kek_metadatas)
+}
+
+pub async fn get_kek_migration_status(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+) -> AppResult<KekMigrationStatus> {
+    let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, authenticated_user.user_id)
+        .await?;
+    let latest_kek = kek_metadatas
+        .iter()
+        .max_by_key(|metadata| metadata.kek_epoch_version)
+        .ok_or_else(|| AppError::internal("missing kek metadata for the account"))?;
+    let usage_summary = notes::repository::summarize_kek_usage_for_user(
+        &state.db,
+        authenticated_user.user_id,
+        latest_kek.kek_id,
+    )
+    .await?;
+    let pending_dek_count = usage_summary
+        .total_deks
+        .saturating_sub(usage_summary.total_latest_kek_deks);
+
+    Ok(KekMigrationStatus {
+        all_deks_use_latest_kek: pending_dek_count == 0,
+        latest_kek_dek_count: usage_summary.total_latest_kek_deks,
+        latest_kek_epoch_version: latest_kek.kek_epoch_version,
+        latest_kek_id: latest_kek.kek_id,
+        pending_dek_count,
+        total_dek_count: usage_summary.total_deks,
+    })
 }
 
 fn build_auth_session(

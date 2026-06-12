@@ -76,3 +76,44 @@ where
         .await
         .map_err(|_| AppError::internal("failed to query the kek metadata"))
 }
+
+pub async fn update_user_auth_key_hash<C>(
+    db: &C,
+    user: entity::Model,
+    auth_key_hash: String,
+) -> AppResult<entity::Model>
+where
+    C: ConnectionTrait,
+{
+    let mut active_model: entity::ActiveModel = user.into();
+    active_model.auth_key_hash = Set(auth_key_hash);
+
+    active_model
+        .update(db)
+        .await
+        .map_err(|_| AppError::internal("failed to update the auth key"))
+}
+
+pub async fn find_user_by_id<C>(db: &C, user_id: Uuid) -> AppResult<Option<entity::Model>>
+where
+    C: ConnectionTrait,
+{
+    entity::Entity::find_by_id(user_id)
+        .one(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query the database"))
+}
+
+pub async fn next_kek_epoch_version_for_user<C>(db: &C, user_id: Uuid) -> AppResult<i32>
+where
+    C: ConnectionTrait,
+{
+    let latest_epoch = list_kek_metadata_for_user(db, user_id)
+        .await?
+        .into_iter()
+        .map(|metadata| metadata.kek_epoch_version)
+        .max()
+        .unwrap_or(0);
+
+    Ok(latest_epoch + 1)
+}

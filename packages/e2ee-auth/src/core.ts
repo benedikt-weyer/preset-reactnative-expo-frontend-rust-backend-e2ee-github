@@ -159,6 +159,41 @@ export function createE2ee(driver: E2eeDriver) {
     }
   }
 
+  function rewrapEncryptedDek(
+    payload: KekDekEncryptedPayload,
+    currentCryptKey: CryptKey,
+    nextCryptKey: CryptKey,
+    nextKekId: string,
+  ): KekWrappedPayload {
+    const normalizedKekId = nextKekId.trim();
+
+    if (!normalizedKekId) {
+      throw new Error('A KEK id is required to rewrap a DEK.');
+    }
+
+    try {
+      const dek = decryptBytesPayload(
+        driver,
+        mapWrappedDekToEncryptedPayload(payload.encryptedDek),
+        deriveKek(driver, currentCryptKey, resolveSecretboxKeyBytes(driver)),
+      );
+      const expectedDekLength = resolveSecretboxKeyBytes(driver);
+
+      if (dek.length !== expectedDekLength) {
+        throw new Error('Invalid decrypted DEK length.');
+      }
+
+      return encryptWrappedDekPayload(
+        driver,
+        dek,
+        deriveKek(driver, nextCryptKey, expectedDekLength),
+        normalizedKekId,
+      );
+    } catch {
+      throw new Error('Unable to rewrap data with the current password.');
+    }
+  }
+
   return {
     createPasswordSalt,
     decryptString,
@@ -167,6 +202,7 @@ export function createE2ee(driver: E2eeDriver) {
     encryptString,
     encryptStringWithDek,
     normalizeEmail,
+    rewrapEncryptedDek,
   };
 }
 

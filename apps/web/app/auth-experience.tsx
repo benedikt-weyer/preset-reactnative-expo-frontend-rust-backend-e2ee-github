@@ -9,16 +9,20 @@ import {
   deriveCredentials,
   encryptStringWithDek,
   normalizeEmail,
+  rewrapEncryptedDek,
   type CryptKey,
   type KekDekEncryptedPayload,
 } from '@repo/e2ee-auth/web';
 
 import { Button } from '@/components/ui/button';
 import {
+  fetchKekMigrationStatus,
   fetchPasswordSalt,
   loginRequest,
+  rotatePasswordRequest,
   registerRequest,
   type AuthApiResponse,
+  type KekMigrationStatusResponse,
   type KekMetadata,
 } from '@/lib/auth-api';
 import {
@@ -51,6 +55,11 @@ type DecryptedNote = {
   updatedAt: string;
 };
 
+type MigrationProgress = {
+  completed: number;
+  total: number;
+};
+
 const featureNotes = [
   'The typed password stays in the browser and derives two keys locally.',
   'The backend sees only the derived auth key plus the per-account salt.',
@@ -62,6 +71,7 @@ export function AuthExperience() {
   const [backendUrl, setBackendUrl] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [nextPassword, setNextPassword] = useState('');
   const [noteTitle, setNoteTitle] = useState('');
   const [noteContent, setNoteContent] = useState('');
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
@@ -70,10 +80,16 @@ export function AuthExperience() {
   const [linkedKeks, setLinkedKeks] = useState<PersistedLinkedKek[]>([]);
   const [activeKekId, setActiveKekId] = useState<string | null>(null);
   const [olderPasswords, setOlderPasswords] = useState<Record<string, string>>({});
+  const [migrationPasswords, setMigrationPasswords] = useState<Record<string, string>>({});
   const [requiredOlderKeks, setRequiredOlderKeks] = useState<KekMetadata[]>([]);
+  const [kekMigrationStatus, setKekMigrationStatus] =
+    useState<KekMigrationStatusResponse | null>(null);
+  const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState('');
   const [isHydrated, setIsHydrated] = useState(false);
+  const [isMigrating, setIsMigrating] = useState(false);
+  const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -101,6 +117,7 @@ export function AuthExperience() {
     if (!session || linkedKeks.length === 0) {
       setNotes([]);
       applySelectedNote(null);
+      setKekMigrationStatus(null);
       return;
     }
 
@@ -110,7 +127,17 @@ export function AuthExperience() {
       token: session.token,
       trimmedBackendUrl: backendUrl.trim(),
     });
+    void refreshKekMigrationStatus(session, backendUrl.trim());
   }, [activeKekId, backendUrl, isHydrated, linkedKeks, session]);
+
+  const missingMigrationKeks = session
+    ? session.kekMetadatas.filter((metadata) => !findLinkedKek(linkedKeks, metadata.kekId))
+    : [];
+  const needsMigration =
+    !!session &&
+    !!kekMigrationStatus &&
+    session.kekMetadatas.length > 1 &&
+    !kekMigrationStatus.allDeksUseLatestKek;
 
   async function handleSubmit() {
     setErrorMessage(null);
@@ -223,6 +250,7 @@ export function AuthExperience() {
         email: credentials.email,
         linkedKeks: nextLinkedKeks,
       });
+      await refreshKekMigrationStatus(response, trimmedBackendUrl);
       await loadNotes({
         emptyMessage:
           mode === 'register'
@@ -245,13 +273,205 @@ export function AuthExperience() {
     setSession(null);
     setActiveKekId(null);
     setPassword('');
+    setNextPassword('');
     setOlderPasswords({});
+    setMigrationPasswords({});
     setNotes([]);
     applySelectedNote(null);
     localStorageAuthPersistence.clearAuthSession();
     setStatusMessage(
       'Signed out. Synced notes remain on the backend, and the linked KEKs stay stored for the next login.',
     );
+  }
+
+  async function refreshKekMigrationStatus(
+    nextSession: AuthApiResponse,
+    trimmedBackendUrl: string,
+  ) {
+    const nextStatus = await fetchKekMigrationStatus({
+      baseUrl: trimmedBackendUrl,
+      token: nextSession.token,
+    });
+
+    setKekMigrationStatus(nextStatus);
+
+    return nextStatus;
+  }
+
+  async function handleRotatePassword() {
+    if (!session) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsRotatingPassword(true);
+
+    try {
+      const saltHex = linkedKeks[0]?.saltHex;
+
+      if (!saltHex) {
+        throw new Error('The current password salt is missing from local storage. Log in again.');
+      }
+
+      const credentials = await deriveCredentials(session.user.email, nextPassword, saltHex);
+      const response = await rotatePasswordRequest({
+        baseUrl: backendUrl,
+        newAuthKey: credentials.authKey,
+        token: session.token,
+      });
+      const latestKekMetadata = sortKekMetadatas(response.kekMetadatas)[0];
+
+      if (!latestKekMetadata) {
+        throw new Error('The backend did not return KEK metadata.');
+      }
+
+      const nextLinkedKeks = mergeLinkedKeks([
+        ...linkedKeks,
+        {
+          cryptKey: credentials.cryptKey,
+          kekEpochVersion: latestKekMetadata.kekEpochVersion,
+          kekId: latestKekMetadata.kekId,
+          saltHex,
+        },
+      ]);
+
+      setSession(response);
+      setLinkedKeks(nextLinkedKeks);
+      setActiveKekId(latestKekMetadata.kekId);
+      setNextPassword('');
+      localStorageAuthPersistence.writeAuthSession(response);
+      localStorageAuthPersistence.writeDerivedCredentials({
+        email: session.user.email,
+        linkedKeks: nextLinkedKeks,
+      });
+      await continueKekMigration({
+        linkedKeks: nextLinkedKeks,
+        nextSession: response,
+      });
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to rotate the password.',
+      );
+    } finally {
+      setIsRotatingPassword(false);
+    }
+  }
+
+  async function handleContinueMigration() {
+    if (!session) {
+      return;
+    }
+
+    setErrorMessage(null);
+
+    try {
+      await continueKekMigration({
+        linkedKeks,
+        nextSession: session,
+      });
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to continue the KEK migration.',
+      );
+    }
+  }
+
+  async function continueKekMigration({
+    linkedKeks: baseLinkedKeks,
+    nextSession,
+  }: {
+    linkedKeks: PersistedLinkedKek[];
+    nextSession: AuthApiResponse;
+  }) {
+    const latestKekMetadata = sortKekMetadatas(nextSession.kekMetadatas)[0];
+
+    if (!latestKekMetadata) {
+      throw new Error('The backend did not return KEK metadata.');
+    }
+
+    const workingLinkedKeks = await deriveMissingLinkedKeks({
+      baseLinkedKeks,
+      email: nextSession.user.email,
+      missingMetadatas: nextSession.kekMetadatas.filter(
+        (metadata) => !findLinkedKek(baseLinkedKeks, metadata.kekId),
+      ),
+      passwordsByKekId: migrationPasswords,
+    });
+    const latestLinkedKek = requireLinkedKek(workingLinkedKeks, latestKekMetadata.kekId);
+    const remoteNotes = await fetchNotes({
+      baseUrl: backendUrl,
+      token: nextSession.token,
+    });
+    const notesToRewrap = remoteNotes.filter(
+      (note) => note.encryptedDek.kekId !== latestLinkedKek.kekId,
+    );
+
+    setIsMigrating(true);
+    setMigrationProgress({
+      completed: 0,
+      total: notesToRewrap.length,
+    });
+
+    try {
+      for (let index = 0; index < notesToRewrap.length; index += 1) {
+        const note = notesToRewrap[index];
+        const noteLinkedKek = findLinkedKek(workingLinkedKeks, note.encryptedDek.kekId);
+
+        if (!noteLinkedKek) {
+          throw new Error(
+            `Missing the local KEK for epoch-linked id ${note.encryptedDek.kekId}. Provide the matching older password first.`,
+          );
+        }
+
+        await updateNote({
+          baseUrl: backendUrl,
+          noteId: note.id,
+          payload: {
+            encryptedDek: rewrapEncryptedDek(
+              note,
+              noteLinkedKek.cryptKey,
+              latestLinkedKek.cryptKey,
+              latestLinkedKek.kekId,
+            ),
+            encryptedPayload: note.encryptedPayload,
+          },
+          token: nextSession.token,
+        });
+
+        setMigrationProgress({
+          completed: index + 1,
+          total: notesToRewrap.length,
+        });
+      }
+
+      setLinkedKeks(workingLinkedKeks);
+      setMigrationPasswords({});
+      localStorageAuthPersistence.writeDerivedCredentials({
+        email: nextSession.user.email,
+        linkedKeks: workingLinkedKeks,
+      });
+
+      const finalStatus = await refreshKekMigrationStatus(nextSession, backendUrl.trim());
+
+      if (!finalStatus.allDeksUseLatestKek) {
+        throw new Error('The backend still reports DEKs on older KEK epochs after migration.');
+      }
+
+      await loadNotes({
+        emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
+        linkedKeks: workingLinkedKeks,
+        token: nextSession.token,
+        trimmedBackendUrl: backendUrl.trim(),
+      });
+      setStatusMessage(
+        notesToRewrap.length === 0
+          ? 'All DEKs already use the latest KEK epoch.'
+          : `Rewrapped ${notesToRewrap.length} DEK${notesToRewrap.length === 1 ? '' : 's'} onto KEK epoch ${latestKekMetadata.kekEpochVersion}.`,
+      );
+    } finally {
+      setIsMigrating(false);
+      setMigrationProgress(null);
+    }
   }
 
   async function loadNotes({
@@ -450,6 +670,95 @@ export function AuthExperience() {
 
           {session ? (
             <div className="grid gap-5">
+              <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-background/80 p-5">
+                <div className="flex items-center gap-3 text-foreground">
+                  <LockKeyhole className="size-5 text-primary" />
+                  <p className="text-sm uppercase tracking-[0.22em] text-muted-foreground">
+                    Password rotation
+                  </p>
+                </div>
+                <p className="text-sm leading-6 text-foreground/75">
+                  Rotate the password-derived auth key first, then rewrap every stored DEK onto the
+                  newest KEK epoch without changing the encrypted note ciphertext.
+                </p>
+                <LabeledInput
+                  autoComplete="new-password"
+                  label="New password"
+                  onChange={setNextPassword}
+                  placeholder="Type the new password for the next KEK epoch"
+                  type="password"
+                  value={nextPassword}
+                />
+                <Button
+                  disabled={isRotatingPassword || isMigrating}
+                  onClick={() => {
+                    void handleRotatePassword();
+                  }}
+                  size="lg"
+                >
+                  {isRotatingPassword ? 'Rotating password...' : 'Rotate password and start migration'}
+                </Button>
+              </div>
+
+              {needsMigration ? (
+                <div className="grid gap-3 rounded-[1.6rem] border border-amber-200 bg-amber-50/80 p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm uppercase tracking-[0.22em] text-amber-900">
+                      KEK migration
+                    </p>
+                    <span className="text-xs font-semibold uppercase tracking-[0.2em] text-amber-900/75">
+                      {kekMigrationStatus?.pendingDekCount ?? 0} pending
+                    </span>
+                  </div>
+                  <p className="text-sm leading-6 text-amber-950/80">
+                    More than one KEK epoch is still active for this account. Continue the
+                    migration to rewrap all stored DEKs onto epoch {kekMigrationStatus?.latestKekEpochVersion ?? '?'}.
+                  </p>
+                  {missingMigrationKeks.map((metadata) => (
+                    <LabeledInput
+                      autoComplete="current-password"
+                      key={metadata.kekId}
+                      label={`Missing password for epoch ${metadata.kekEpochVersion}`}
+                      onChange={(value) =>
+                        setMigrationPasswords((currentPasswords) => ({
+                          ...currentPasswords,
+                          [metadata.kekId]: value,
+                        }))
+                      }
+                      placeholder="Type the password for this older KEK epoch"
+                      type="password"
+                      value={migrationPasswords[metadata.kekId] ?? ''}
+                    />
+                  ))}
+                  {migrationProgress ? (
+                    <div className="grid gap-2">
+                      <div className="h-3 overflow-hidden rounded-full bg-amber-100">
+                        <div
+                          className="h-full rounded-full bg-amber-500 transition-[width]"
+                          style={{
+                            width: `${migrationProgress.total === 0 ? 100 : (migrationProgress.completed / migrationProgress.total) * 100}%`,
+                          }}
+                        />
+                      </div>
+                      <p className="text-sm text-amber-950/80">
+                        Migrated {migrationProgress.completed} of {migrationProgress.total} DEKs.
+                      </p>
+                    </div>
+                  ) : null}
+                  {!isMigrating ? (
+                    <Button
+                      onClick={() => {
+                        void handleContinueMigration();
+                      }}
+                      size="lg"
+                      variant="outline"
+                    >
+                      Continue migration
+                    </Button>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-background/80 p-5">
                 <div className="flex items-center gap-3 text-foreground">
                   <UserRound className="size-5 text-primary" />
@@ -801,4 +1110,49 @@ function formatTimestamp(value: string) {
     dateStyle: 'medium',
     timeStyle: 'short',
   }).format(new Date(value));
+}
+
+async function deriveMissingLinkedKeks({
+  baseLinkedKeks,
+  email,
+  missingMetadatas,
+  passwordsByKekId,
+}: {
+  baseLinkedKeks: PersistedLinkedKek[];
+  email: string;
+  missingMetadatas: KekMetadata[];
+  passwordsByKekId: Record<string, string>;
+}) {
+  if (missingMetadatas.length === 0) {
+    return baseLinkedKeks;
+  }
+
+  const saltHex = baseLinkedKeks[0]?.saltHex;
+
+  if (!saltHex) {
+    throw new Error('The current password salt is missing from local storage. Log in again.');
+  }
+
+  const derivedLinkedKeks = [...baseLinkedKeks];
+
+  for (const metadata of missingMetadatas) {
+    const password = passwordsByKekId[metadata.kekId]?.trim();
+
+    if (!password) {
+      throw new Error(
+        `Enter the password for KEK epoch ${metadata.kekEpochVersion} before continuing the migration.`,
+      );
+    }
+
+    const credentials = await deriveCredentials(email, password, saltHex);
+
+    derivedLinkedKeks.push({
+      cryptKey: credentials.cryptKey,
+      kekEpochVersion: metadata.kekEpochVersion,
+      kekId: metadata.kekId,
+      saltHex,
+    });
+  }
+
+  return mergeLinkedKeks(derivedLinkedKeks);
 }

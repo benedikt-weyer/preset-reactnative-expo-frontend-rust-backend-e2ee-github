@@ -1,13 +1,19 @@
-use axum::{extract::State, routing::post, Json, Router};
+use axum::{extract::State, routing::{get, post}, Json, Router};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-use crate::{app_state::AppState, domains::auth::service, error::AppResult};
+use crate::{
+    app_state::AppState,
+    domains::auth::{service, AuthenticatedUser},
+    error::AppResult,
+};
 
 pub fn router() -> Router<AppState> {
     Router::new()
+        .route("/kek-status", get(kek_status))
         .route("/salt", post(salt))
         .route("/login", post(login))
+        .route("/rotate-password", post(rotate_password))
         .route("/register", post(register))
 }
 
@@ -30,6 +36,12 @@ pub struct RegisterRequest {
     email: String,
     auth_key: String,
     salt_hex: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RotatePasswordRequest {
+    new_auth_key: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -60,6 +72,17 @@ pub struct SaltResponse {
 pub struct KekMetadataResponse {
     kek_epoch_version: i32,
     kek_id: Uuid,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KekMigrationStatusResponse {
+    all_deks_use_latest_kek: bool,
+    latest_kek_dek_count: u64,
+    latest_kek_epoch_version: i32,
+    latest_kek_id: Uuid,
+    pending_dek_count: u64,
+    total_dek_count: u64,
 }
 
 pub async fn register(
@@ -111,6 +134,32 @@ pub async fn login(
     Ok(Json(map_auth_response(session)))
 }
 
+pub async fn rotate_password(
+    State(state): State<AppState>,
+    authenticated_user: AuthenticatedUser,
+    Json(payload): Json<RotatePasswordRequest>,
+) -> AppResult<Json<AuthResponse>> {
+    let session = service::rotate_password(
+        &state,
+        &authenticated_user,
+        service::RotatePasswordCommand {
+            new_auth_key: payload.new_auth_key,
+        },
+    )
+    .await?;
+
+    Ok(Json(map_auth_response(session)))
+}
+
+pub async fn kek_status(
+    State(state): State<AppState>,
+    authenticated_user: AuthenticatedUser,
+) -> AppResult<Json<KekMigrationStatusResponse>> {
+    Ok(Json(map_kek_migration_status_response(
+        service::get_kek_migration_status(&state, &authenticated_user).await?,
+    )))
+}
+
 fn map_auth_response(session: service::AuthSession) -> AuthResponse {
     AuthResponse {
         kek_metadatas: session
@@ -131,5 +180,18 @@ fn map_kek_metadata_response(metadata: service::KekMetadata) -> KekMetadataRespo
     KekMetadataResponse {
         kek_epoch_version: metadata.kek_epoch_version,
         kek_id: metadata.kek_id,
+    }
+}
+
+fn map_kek_migration_status_response(
+    status: service::KekMigrationStatus,
+) -> KekMigrationStatusResponse {
+    KekMigrationStatusResponse {
+        all_deks_use_latest_kek: status.all_deks_use_latest_kek,
+        latest_kek_dek_count: status.latest_kek_dek_count,
+        latest_kek_epoch_version: status.latest_kek_epoch_version,
+        latest_kek_id: status.latest_kek_id,
+        pending_dek_count: status.pending_dek_count,
+        total_dek_count: status.total_dek_count,
     }
 }

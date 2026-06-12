@@ -48,6 +48,7 @@ export const {
   encryptString,
   encryptStringWithDek,
   normalizeEmail,
+  rewrapEncryptedDek,
 } = e2ee;
 export type {
   CryptKey,

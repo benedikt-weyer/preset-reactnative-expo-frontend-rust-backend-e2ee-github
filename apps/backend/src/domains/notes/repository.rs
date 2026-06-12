@@ -11,6 +11,11 @@ use crate::{
     error::{AppError, AppResult},
 };
 
+pub struct KekUsageSummary {
+    pub total_deks: u64,
+    pub total_latest_kek_deks: u64,
+}
+
 pub struct EncryptedBlob {
     pub algorithm: String,
     pub ciphertext_hex: String,
@@ -184,6 +189,32 @@ where
         .map_err(|_| AppError::internal("failed to delete the note"))?;
 
     Ok(())
+}
+
+pub async fn summarize_kek_usage_for_user<C>(
+    db: &C,
+    user_id: Uuid,
+    latest_kek_id: Uuid,
+) -> AppResult<KekUsageSummary>
+where
+    C: ConnectionTrait,
+{
+    let deks = dek_entity::Entity::find()
+        .filter(dek_entity::Column::UserId.eq(user_id))
+        .all(db)
+        .await
+        .map_err(|_| AppError::internal("failed to query resource deks"))?;
+
+    let total_deks = deks.len() as u64;
+    let total_latest_kek_deks = deks
+        .into_iter()
+        .filter(|dek| dek.kek_id == latest_kek_id)
+        .count() as u64;
+
+    Ok(KekUsageSummary {
+        total_deks,
+        total_latest_kek_deks,
+    })
 }
 
 async fn load_deks_for_resources<C>(

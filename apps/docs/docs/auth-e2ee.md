@@ -62,6 +62,40 @@ can derive the same `authKey` again:
 10. The backend hashes the received `authKey` with SHA-512 and compares it in constant time with the stored hash.
 11. If verification succeeds, the backend issues access and refresh JWTs and returns the current KEK metadata list.
 
+## Password rotation flow
+
+Password rotation keeps the same stored salt, but changes the derived auth key and
+starts a new KEK epoch:
+
+1. The authenticated client asks the user for a new password.
+2. The client derives a new `cryptKey` and `authKey` locally from `newPassword + existing saltHex`.
+3. The client sends the new derived `authKey` to `POST /api/auth/rotate-password` with the current access token.
+4. The backend updates `auth_key_hash` for that user.
+5. The backend inserts a new `kek_metadata` row with a fresh server-generated `kek_id` and the next `kek_epoch_version`.
+6. The backend returns the updated KEK metadata list.
+7. The client links the new locally derived KEK to that newest `kek_id`.
+8. The client starts a KEK migration pass that rewraps each stored DEK onto the newest KEK epoch.
+
+The salt stays unchanged so the client can still derive older KEKs from older
+passwords when an older epoch still has encrypted rows assigned to it.
+
+## DEK rewrap migration flow
+
+After a password rotation, the encrypted note payloads stay unchanged. Only the
+wrapped DEKs are rotated:
+
+1. The client fetches the current encrypted rows.
+2. For each row whose `encryptedDek.kekId` is not the newest `kek_id`, the client:
+   - decrypts the wrapped DEK locally with the old linked KEK
+   - re-encrypts the same DEK locally with the newest linked KEK
+   - sends `PUT /api/notes/{note_id}` with the unchanged encrypted payload and the updated wrapped DEK
+3. The backend updates the stored `wrapped_dek_hex`, `nonce_hex`, and `kek_id` on the existing DEK row.
+4. The client calls `GET /api/auth/kek-status` for a final verification pass.
+5. Migration is considered complete only when every DEK row for that user points at the newest KEK epoch.
+
+If the client does not have one of the older KEKs linked locally yet, it asks for
+the matching older password before continuing the migration.
+
 ## Synced note encryption flow
 
 After login or registration, the web and mobile clients keep a local keyring of
@@ -116,6 +150,12 @@ For each active KEK, the backend also stores one `kek_metadata` row with:
 - `kek_epoch_version`, incremented per user for rotations
 - `user_id`, which scopes that KEK metadata row to one account
 
+For migration bookkeeping, the backend can also compute:
+
+- the latest KEK epoch for that user
+- how many DEK rows already use that latest epoch
+- how many DEK rows are still pending migration
+
 The backend does not store:
 
 - the raw password
@@ -129,6 +169,7 @@ The client stores locally:
 - linked KEKs keyed by `kek_id`
 - the latest known `kek_epoch_version` values returned by the backend
 - any older active KEKs that were relinked with older passwords during login
+- temporary client-side migration progress while rewrapping DEKs to a new epoch
 
 ## Current routes
 
@@ -137,6 +178,8 @@ The client stores locally:
 | `POST /api/auth/salt` | return the stored per-user salt plus active KEK metadata for login |
 | `POST /api/auth/register` | create a user from `email + authKey + saltHex` and return the initial KEK metadata |
 | `POST /api/auth/login` | verify the derived auth key, issue tokens, and return active KEK metadata |
+| `POST /api/auth/rotate-password` | update the stored auth-key hash and create the next KEK epoch |
+| `GET /api/auth/kek-status` | report whether all DEKs for the user already use the newest KEK epoch |
 | `GET /api/notes` | return encrypted notes plus wrapped DEKs for the authenticated user |
 | `POST /api/notes` | create an encrypted note row and its wrapped DEK row |
 | `GET /api/notes/{note_id}` | return one encrypted note and wrapped DEK |
@@ -150,4 +193,5 @@ The client stores locally:
 - Every encrypted resource row gets its own client-generated random DEK.
 - Every wrapped DEK is linked to a specific `kek_id`, which allows password rotations without reusing a single long-lived KEK identifier.
 - Clients must keep older linked KEKs locally if older ciphertext rows are still active.
+- Rotating the password is not finished until the client verifies that every DEK row was rewrapped onto the newest KEK epoch.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

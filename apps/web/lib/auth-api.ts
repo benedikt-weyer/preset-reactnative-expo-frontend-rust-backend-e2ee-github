@@ -3,6 +3,11 @@ export type BaseAuthApiRequest = {
   email: string;
 };
 
+type AuthenticatedApiRequest = {
+  baseUrl: string;
+  token: string;
+};
+
 export type KekMetadata = {
   kekEpochVersion: number;
   kekId: string;
@@ -29,6 +34,19 @@ export type AuthApiResponse = {
 export type PasswordSaltResponse = {
   kekMetadatas: KekMetadata[];
   saltHex: string;
+};
+
+export type RotatePasswordApiRequest = AuthenticatedApiRequest & {
+  newAuthKey: string;
+};
+
+export type KekMigrationStatusResponse = {
+  allDeksUseLatestKek: boolean;
+  latestKekDekCount: number;
+  latestKekEpochVersion: number;
+  latestKekId: string;
+  pendingDekCount: number;
+  totalDekCount: number;
 };
 
 export async function fetchPasswordSalt(request: BaseAuthApiRequest) {
@@ -64,6 +82,58 @@ export async function loginRequest(request: LoginApiRequest) {
 
 export async function registerRequest(request: RegisterApiRequest) {
   return postAuthRequest('/api/auth/register', request);
+}
+
+export async function rotatePasswordRequest(request: RotatePasswordApiRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/auth/rotate-password'), {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${request.token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      newAuthKey: request.newAuthKey,
+    }),
+  });
+
+  const responseBody = (await response.json().catch(() => null)) as
+    | AuthApiResponse
+    | { error?: string }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(readErrorMessage(responseBody));
+  }
+
+  if (!isAuthApiResponse(responseBody)) {
+    throw new Error('The backend response was incomplete.');
+  }
+
+  return responseBody;
+}
+
+export async function fetchKekMigrationStatus(request: AuthenticatedApiRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/auth/kek-status'), {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${request.token}`,
+    },
+  });
+
+  const responseBody = (await response.json().catch(() => null)) as
+    | KekMigrationStatusResponse
+    | { error?: string }
+    | null;
+
+  if (!response.ok) {
+    throw new Error(readErrorMessage(responseBody));
+  }
+
+  if (!isKekMigrationStatusResponse(responseBody)) {
+    throw new Error('The backend did not return a KEK migration status.');
+  }
+
+  return responseBody;
 }
 
 async function postAuthRequest(
@@ -136,9 +206,27 @@ function isKekMetadata(value: unknown): value is KekMetadata {
     typeof value.kekId === 'string';
 }
 
+function isKekMigrationStatusResponse(value: unknown): value is KekMigrationStatusResponse {
+  return !!value &&
+    typeof value === 'object' &&
+    'allDeksUseLatestKek' in value &&
+    'latestKekDekCount' in value &&
+    'latestKekEpochVersion' in value &&
+    'latestKekId' in value &&
+    'pendingDekCount' in value &&
+    'totalDekCount' in value &&
+    typeof value.allDeksUseLatestKek === 'boolean' &&
+    typeof value.latestKekDekCount === 'number' &&
+    typeof value.latestKekEpochVersion === 'number' &&
+    typeof value.latestKekId === 'string' &&
+    typeof value.pendingDekCount === 'number' &&
+    typeof value.totalDekCount === 'number';
+}
+
 function readErrorMessage(
   responseBody:
     | AuthApiResponse
+    | KekMigrationStatusResponse
     | PasswordSaltResponse
     | { error?: string }
     | null,

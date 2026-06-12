@@ -24,6 +24,7 @@ import {
   encryptString,
   encryptStringWithDek,
   normalizeEmail,
+  rewrapEncryptedDek,
 } from './index';
 import { createE2ee } from './core';
 
@@ -216,5 +217,38 @@ describe('encryptStringWithDek/decryptStringWithDek', () => {
     expect(() => encryptStringWithDek('secret note', cryptKey, '   ')).toThrow(
       'A KEK id is required to encrypt data.',
     );
+  });
+
+  it('rewraps the existing DEK to a new kek id without changing the note payload', async () => {
+    const currentCredentials = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      '00112233445566778899aabbccddeeff',
+    );
+    const nextCredentials = await deriveCredentials(
+      'person@example.com',
+      'new horse battery',
+      '00112233445566778899aabbccddeeff',
+    );
+    const payload = encryptStringWithDek('secret note', currentCredentials.cryptKey, 'kek-v1');
+
+    const rewrappedDek = rewrapEncryptedDek(
+      payload,
+      currentCredentials.cryptKey,
+      nextCredentials.cryptKey,
+      'kek-v2',
+    );
+
+    expect(rewrappedDek.kekId).toBe('kek-v2');
+    expect(rewrappedDek.wrappedDekHex).not.toBe(payload.encryptedDek.wrappedDekHex);
+    expect(
+      decryptStringWithDek(
+        {
+          encryptedDek: rewrappedDek,
+          encryptedPayload: payload.encryptedPayload,
+        },
+        nextCredentials.cryptKey,
+      ),
+    ).toBe('secret note');
   });
 });
