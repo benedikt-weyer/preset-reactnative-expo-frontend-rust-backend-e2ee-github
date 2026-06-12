@@ -3,6 +3,35 @@
 This page focuses on how note payloads are encrypted locally, how DEKs are
 wrapped, and how the backend stores only ciphertext.
 
+## API user dashboard
+
+The web client exposes an API user dashboard for the owner user. That screen
+lists the current API users, shows their provisioning progress across notes,
+and lets the owner remove an API user when that principal should no longer be
+able to decrypt account data.
+
+Creating an API user uses the same local encryption model as notes, but for an
+encrypted label instead of a note body:
+
+1. The client creates a fresh API token locally.
+2. The client derives an auth key plus a KEK keypair for that API user from the token.
+3. The client encrypts the human-readable label locally.
+4. The client wraps the label DEK once for the owner principal and once for the new API user principal.
+5. The backend stores the API user row, its first `kek_metadata` row, and the wrapped label DEKs.
+6. The client then provisions wrapped note DEKs for any existing notes that do not yet include that API user as a recipient.
+
+Removing an API user is intentionally destructive for that principal's access:
+
+1. The owner confirms the removal in the dashboard.
+2. The backend deletes all note-recipient DEK rows whose `user_id` matches that API user.
+3. The backend deletes the wrapped label DEK rows whose `resource_id` points at that API user's label resource.
+4. The backend deletes the API user's `kek_metadata` rows.
+5. The backend deletes the `api_users` row itself.
+
+After that cleanup, the removed API user no longer has any KEK metadata or any
+wrapped DEKs left in the database, so it cannot continue decrypting either note
+data or its own encrypted label.
+
 ## Save flow
 
 After login or registration, the web and mobile clients keep a local keyring of

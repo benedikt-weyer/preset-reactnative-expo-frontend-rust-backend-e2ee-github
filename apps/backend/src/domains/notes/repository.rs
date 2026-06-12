@@ -336,6 +336,25 @@ where
     Ok(())
 }
 
+pub async fn delete_wrapped_deks_linked_to_principal<C>(db: &C, principal_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    dek_entity::Entity::delete_many()
+        .filter(dek_entity::Column::UserId.eq(principal_id))
+        .exec(db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the resource deks"))?;
+
+    dek_entity::Entity::delete_many()
+        .filter(dek_entity::Column::ResourceId.eq(principal_id))
+        .exec(db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the resource deks"))?;
+
+    Ok(())
+}
+
 pub async fn find_wrapped_dek<C>(
     db: &C,
     resource_id: Uuid,

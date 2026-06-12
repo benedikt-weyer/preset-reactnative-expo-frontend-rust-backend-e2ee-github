@@ -36,6 +36,14 @@ For linked-principal management, the backend also stores:
 - one encrypted API-user label plus its wrapped DEKs
 - API-user provisioning progress, which is derived from missing note DEK rows for that API user
 
+When an API user is deleted, the backend also removes all database rows that
+would otherwise keep that principal decryptable:
+
+- note-recipient DEK rows whose `user_id` matches the API user id
+- label DEK rows whose `resource_id` matches the API user id
+- KEK metadata rows in `kek_metadata` scoped to that API user id
+- the API user row in `api_users`
+
 For migration bookkeeping, the backend can also compute:
 
 - the latest KEK epoch for that user
@@ -129,6 +137,7 @@ api_users ||--o{ deks : user_id
 | `GET /api/auth/api-users` | list API users for the owner account, including label ciphertext and provisioning state |
 | `POST /api/auth/api-users` | create an API user and store the initial label ciphertext plus wrapped label DEKs |
 | `GET /api/auth/api-users/{api_user_id}` | load one API user and its provisioning state |
+| `DELETE /api/auth/api-users/{api_user_id}` | remove one API user and delete its linked KEK metadata plus all linked DEK rows |
 | `POST /api/auth/api-users/{api_user_id}/provision` | append wrapped DEKs for notes that still need that API user recipient |
 | `GET /api/notes` | return encrypted notes plus the wrapped DEK for the authenticated principal |
 | `POST /api/notes` | create an encrypted note row and its wrapped DEK rows |
@@ -167,4 +176,5 @@ stop
 - A note update replaces the entire wrapped-DEK recipient set, so clients must write all current recipients together.
 - Clients must keep older linked KEKs locally if older ciphertext rows are still active.
 - Rotating the password is not finished until the client verifies that every DEK row was rewrapped onto the newest KEK epoch.
+- Deleting an API user must remove both note-recipient DEKs and label DEKs before deleting that principal's KEK metadata, because DEK rows reference `kek_public_key`.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

@@ -505,6 +505,36 @@ pub async fn create_api_user(
     build_api_user_record(state, authenticated_user.principal_id, api_user).await
 }
 
+pub async fn delete_api_user(
+    state: &AppState,
+    authenticated_user: &AuthenticatedUser,
+    api_user_id: Uuid,
+) -> AppResult<()> {
+    require_user_principal(authenticated_user)?;
+
+    let api_user = repository::find_api_user_by_id(&state.db, api_user_id)
+        .await?
+        .filter(|api_user| api_user.user_id == authenticated_user.owner_user_id)
+        .ok_or_else(|| AppError::not_found("api user not found"))?;
+
+    let transaction = state
+        .db
+        .begin()
+        .await
+        .map_err(|_| AppError::internal("failed to start the api user deletion transaction"))?;
+
+    notes::repository::delete_wrapped_deks_linked_to_principal(&transaction, api_user.id).await?;
+    repository::delete_kek_metadata_for_user(&transaction, api_user.id).await?;
+    repository::delete_api_user(&transaction, api_user.id).await?;
+
+    transaction
+        .commit()
+        .await
+        .map_err(|_| AppError::internal("failed to commit the api user deletion transaction"))?;
+
+    Ok(())
+}
+
 pub async fn provision_api_user_deks(
     state: &AppState,
     authenticated_user: &AuthenticatedUser,

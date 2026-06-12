@@ -1,4 +1,5 @@
 use axum::{
+    http::StatusCode,
     extract::{Path, State},
     routing::{get, post},
     Json, Router,
@@ -23,7 +24,7 @@ pub fn router() -> Router<AppState> {
         .route("/login", post(login))
     .route("/api-users/login", post(api_user_login))
     .route("/api-users", get(list_api_users).post(create_api_user))
-    .route("/api-users/{api_user_id}", get(get_api_user))
+    .route("/api-users/{api_user_id}", get(get_api_user).delete(delete_api_user))
     .route("/api-users/{api_user_id}/provision", post(provision_api_user_deks))
         .route("/rotate-password", post(rotate_password))
         .route("/register", post(register))
@@ -368,6 +369,16 @@ pub async fn create_api_user(
         )
         .await?,
     )))
+}
+
+pub async fn delete_api_user(
+    State(state): State<AppState>,
+    Path(api_user_id): Path<Uuid>,
+    authenticated_user: AuthenticatedUser,
+) -> AppResult<StatusCode> {
+    service::delete_api_user(&state, &authenticated_user, api_user_id).await?;
+
+    Ok(StatusCode::NO_CONTENT)
 }
 
 pub async fn provision_api_user_deks(

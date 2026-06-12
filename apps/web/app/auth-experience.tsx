@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { ArrowRight, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react';
+import { ArrowRight, LockKeyhole, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 
 import {
   createApiToken,
@@ -20,6 +20,7 @@ import {
 import { Button } from '@/components/ui/button';
 import {
   createApiUserRequest,
+  deleteApiUserRequest,
   fetchApiUser,
   fetchApiUsers,
   fetchKekMigrationStatus,
@@ -112,6 +113,7 @@ export function AuthExperience() {
   const [statusMessage, setStatusMessage] = useState('');
   const [isHydrated, setIsHydrated] = useState(false);
   const [isCreatingApiUser, setIsCreatingApiUser] = useState(false);
+  const [deletingApiUserId, setDeletingApiUserId] = useState<string | null>(null);
   const [isMigrating, setIsMigrating] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -786,6 +788,40 @@ export function AuthExperience() {
     }
   }
 
+  async function handleDeleteApiUser(apiUser: ApiUserView) {
+    if (!session || session.currentPrincipal.kind !== 'user') {
+      return;
+    }
+
+    const confirmed = globalThis.confirm(
+      `Remove api user ${apiUser.username}? This also deletes its linked KEK and DEK entries.`,
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setErrorMessage(null);
+    setDeletingApiUserId(apiUser.id);
+
+    try {
+      await deleteApiUserRequest({
+        apiUserId: apiUser.id,
+        baseUrl: backendUrl,
+        token: session.token,
+      });
+
+      setApiUsers((currentApiUsers) => currentApiUsers.filter((entry) => entry.id !== apiUser.id));
+      setStatusMessage(`Removed api user ${apiUser.username} and its linked key material.`);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to delete the api user.',
+      );
+    } finally {
+      setDeletingApiUserId(null);
+    }
+  }
+
   async function continueApiUserProvisioning(
     apiUser: ApiUserResponse,
     {
@@ -1022,11 +1058,11 @@ export function AuthExperience() {
                   <div className="flex items-center gap-3 text-foreground">
                     <ShieldCheck className="size-5 text-primary" />
                     <p className="text-sm uppercase tracking-[0.22em] text-muted-foreground">
-                      API users
+                      API user dashboard
                     </p>
                   </div>
                   <p className="text-sm leading-6 text-foreground/75">
-                    Generate a dedicated api token locally, store its derived auth key and KEK on the backend, then provision wrapped DEKs for every existing resource.
+                    Generate dedicated api tokens locally, inspect the current api users, and remove a principal together with its linked KEK and DEK records when it is no longer needed.
                   </p>
                   <LabeledInput
                     autoComplete="off"
@@ -1086,9 +1122,30 @@ export function AuthExperience() {
                                 {apiUser.username}
                               </p>
                             </div>
-                            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                              {apiUser.provisioning.completedResourceCount}/{apiUser.provisioning.totalResourceCount}
-                            </span>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                                {apiUser.provisioning.completedResourceCount}/{apiUser.provisioning.totalResourceCount}
+                              </span>
+                              <Button
+                                disabled={
+                                  deletingApiUserId === apiUser.id ||
+                                  !!apiUserProgress ||
+                                  isCreatingApiUser
+                                }
+                                onClick={() => {
+                                  void handleDeleteApiUser(apiUser);
+                                }}
+                                size="sm"
+                                variant="ghost"
+                              >
+                                <Trash2 className="size-4" />
+                                {deletingApiUserId === apiUser.id ? 'Removing...' : 'Remove'}
+                              </Button>
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-foreground/60">
+                            <span>Created {formatTimestamp(apiUser.createdAt)}</span>
+                            <span>Updated {formatTimestamp(apiUser.updatedAt)}</span>
                           </div>
                           <div className="h-2 overflow-hidden rounded-full bg-muted">
                             <div
@@ -1105,7 +1162,7 @@ export function AuthExperience() {
                           </p>
                           {apiUser.provisioning.pendingResourceCount > 0 ? (
                             <Button
-                              disabled={!!apiUserProgress || isCreatingApiUser}
+                              disabled={!!apiUserProgress || isCreatingApiUser || deletingApiUserId === apiUser.id}
                               onClick={() => {
                                 void handleResumeApiUser(apiUser.id);
                               }}

@@ -154,6 +154,19 @@ where
     .map_err(|_| AppError::internal("failed to create the api user"))
 }
 
+pub async fn delete_api_user<C>(db: &C, api_user_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    api_user_entity::Entity::delete_many()
+        .filter(api_user_entity::Column::Id.eq(api_user_id))
+        .exec(db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the api user"))?;
+
+    Ok(())
+}
+
 pub async fn insert_kek_metadata<C>(
     db: &C,
     user_id: Uuid,
@@ -173,6 +186,19 @@ where
     .insert(db)
     .await
     .map_err(|_| AppError::internal("failed to create the kek metadata"))
+}
+
+pub async fn delete_kek_metadata_for_user<C>(db: &C, user_id: Uuid) -> AppResult<()>
+where
+    C: ConnectionTrait,
+{
+    kek_metadata_entity::Entity::delete_many()
+        .filter(kek_metadata_entity::Column::UserId.eq(user_id))
+        .exec(db)
+        .await
+        .map_err(|_| AppError::internal("failed to delete the kek metadata"))?;
+
+    Ok(())
 }
 
 pub async fn list_kek_metadata_for_user<C>(
