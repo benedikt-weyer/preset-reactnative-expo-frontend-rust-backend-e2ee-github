@@ -28,10 +28,21 @@ nav:
   - Overview: index.md
   - Workspace: workspace.md
   - Commands: commands.md
-  - Auth And E2EE: auth-e2ee.md
+  - Auth And E2EE:
+      - Overview: auth-e2ee.md
+      - Registration And Login: auth-authentication.md
+      - Password Rotation: auth-password-rotation.md
+      - Note Encryption: auth-note-encryption.md
+      - Storage And Routes: auth-storage-routes.md
 markdown_extensions:
   - admonition
   - attr_list
+  - plantuml_markdown:
+      servers:
+        - url: https://www.plantuml.com/plantuml
+          kroki: false
+      format: svg_inline
+      fallback_to_get: true
   - tables
   - toc:
       permalink: true
