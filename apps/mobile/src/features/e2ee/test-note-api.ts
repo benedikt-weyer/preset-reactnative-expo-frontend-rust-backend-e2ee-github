@@ -1,4 +1,4 @@
-import type { EncryptedPayload } from '@repo/e2ee-auth/native';
+import type { KekDekEncryptedPayload } from '@repo/e2ee-auth/native';
 
 type AuthenticatedRequest = {
   baseUrl: string;
@@ -10,14 +10,14 @@ type NoteByIdRequest = AuthenticatedRequest & {
 };
 
 type SaveNoteRequest = AuthenticatedRequest & {
-  payload: EncryptedPayload;
+  payload: KekDekEncryptedPayload;
 };
 
 type UpdateNoteRequest = SaveNoteRequest & {
   noteId: string;
 };
 
-export type NoteResponse = EncryptedPayload & {
+export type NoteResponse = KekDekEncryptedPayload & {
   createdAt: string;
   id: string;
   updatedAt: string;
@@ -136,27 +136,37 @@ function validatePayload(
     !responseBody ||
     typeof responseBody !== 'object' ||
     !('id' in responseBody) ||
-    !('algorithm' in responseBody) ||
+    !('encryptedDek' in responseBody) ||
+    !('encryptedPayload' in responseBody) ||
     typeof responseBody.id !== 'string' ||
-    typeof responseBody.algorithm !== 'string' ||
-    typeof responseBody.ciphertextHex !== 'string' ||
     typeof responseBody.createdAt !== 'string' ||
-    typeof responseBody.nonceHex !== 'string' ||
     typeof responseBody.updatedAt !== 'string' ||
-    typeof responseBody.version !== 'number'
+    !isEncryptedPayload(responseBody.encryptedDek) ||
+    !isEncryptedPayload(responseBody.encryptedPayload)
   ) {
     throw new Error('The backend returned an invalid note payload.');
   }
 
   return {
-    algorithm: responseBody.algorithm,
-    ciphertextHex: responseBody.ciphertextHex,
     createdAt: responseBody.createdAt,
+    encryptedDek: responseBody.encryptedDek,
+    encryptedPayload: responseBody.encryptedPayload,
     id: responseBody.id,
-    nonceHex: responseBody.nonceHex,
     updatedAt: responseBody.updatedAt,
-    version: responseBody.version,
   };
+}
+
+function isEncryptedPayload(value: unknown): value is KekDekEncryptedPayload['encryptedPayload'] {
+  return !!value &&
+    typeof value === 'object' &&
+    'algorithm' in value &&
+    'ciphertextHex' in value &&
+    'nonceHex' in value &&
+    'version' in value &&
+    typeof value.algorithm === 'string' &&
+    typeof value.ciphertextHex === 'string' &&
+    typeof value.nonceHex === 'string' &&
+    typeof value.version === 'number';
 }
 
 function readErrorMessage(

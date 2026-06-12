@@ -19,6 +19,13 @@ export type EncryptedPayload = {
   version: 1;
 };
 
+export type KekWrappedPayload = EncryptedPayload;
+
+export type KekDekEncryptedPayload = {
+  encryptedDek: KekWrappedPayload;
+  encryptedPayload: EncryptedPayload;
+};
+
 export type E2eeDriver = {
   hash: (message: Uint8Array) => Uint8Array;
   hashBytes: number | (() => number);
@@ -80,28 +87,54 @@ export function createE2ee(driver: E2eeDriver) {
   }
 
   function encryptString(value: string, cryptKey: CryptKey): EncryptedPayload {
-    const nonce = driver.randomBytes(resolveSecretboxNonceBytes(driver));
-    const ciphertext = driver.encrypt(
+    return encryptBytesPayload(
+      driver,
       utf8(value),
-      nonce,
-      deriveEncryptionKey(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
+      deriveKek(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
     );
-
-    return {
-      algorithm: 'xsalsa20-poly1305',
-      ciphertextHex: bytesToHex(ciphertext),
-      nonceHex: bytesToHex(nonce),
-      version: 1,
-    };
   }
 
   function decryptString(payload: EncryptedPayload, cryptKey: CryptKey) {
     try {
-      const plaintext = driver.decrypt(
-        hexToBytes(payload.ciphertextHex),
-        hexToBytes(payload.nonceHex),
-        deriveEncryptionKey(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
+      const plaintext = decryptBytesPayload(
+        driver,
+        payload,
+        deriveKek(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
       );
+
+      return new TextDecoder().decode(plaintext);
+    } catch {
+      throw new Error('Unable to decrypt data with the current password.');
+    }
+  }
+
+  function encryptStringWithDek(value: string, cryptKey: CryptKey): KekDekEncryptedPayload {
+    const dek = driver.randomBytes(resolveSecretboxKeyBytes(driver));
+
+    return {
+      encryptedDek: encryptBytesPayload(
+        driver,
+        dek,
+        deriveKek(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
+      ),
+      encryptedPayload: encryptBytesPayload(driver, utf8(value), dek),
+    };
+  }
+
+  function decryptStringWithDek(payload: KekDekEncryptedPayload, cryptKey: CryptKey) {
+    try {
+      const dek = decryptBytesPayload(
+        driver,
+        payload.encryptedDek,
+        deriveKek(driver, cryptKey, resolveSecretboxKeyBytes(driver)),
+      );
+      const expectedDekLength = resolveSecretboxKeyBytes(driver);
+
+      if (dek.length !== expectedDekLength) {
+        throw new Error('Invalid decrypted DEK length.');
+      }
+
+      const plaintext = decryptBytesPayload(driver, payload.encryptedPayload, dek);
 
       return new TextDecoder().decode(plaintext);
     } catch {
@@ -112,13 +145,15 @@ export function createE2ee(driver: E2eeDriver) {
   return {
     createPasswordSalt,
     decryptString,
+    decryptStringWithDek,
     deriveCredentials,
     encryptString,
+    encryptStringWithDek,
     normalizeEmail,
   };
 }
 
-function deriveEncryptionKey(driver: E2eeDriver, cryptKey: CryptKey, keyLength: number) {
+function deriveKek(driver: E2eeDriver, cryptKey: CryptKey, keyLength: number) {
   return deriveSubkey(
     driver,
     cryptKey,
@@ -224,6 +259,26 @@ function normalizePasswordSalt(saltHex: string, saltBytes: number) {
   }
 
   return decodedSalt;
+}
+
+function encryptBytesPayload(driver: E2eeDriver, value: Uint8Array, key: Uint8Array): EncryptedPayload {
+  const nonce = driver.randomBytes(resolveSecretboxNonceBytes(driver));
+  const ciphertext = driver.encrypt(value, nonce, key);
+
+  return {
+    algorithm: 'xsalsa20-poly1305',
+    ciphertextHex: bytesToHex(ciphertext),
+    nonceHex: bytesToHex(nonce),
+    version: 1,
+  };
+}
+
+function decryptBytesPayload(driver: E2eeDriver, payload: EncryptedPayload, key: Uint8Array) {
+  return driver.decrypt(
+    hexToBytes(payload.ciphertextHex),
+    hexToBytes(payload.nonceHex),
+    key,
+  );
 }
 
 function utf8(value: string) {

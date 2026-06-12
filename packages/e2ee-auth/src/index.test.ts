@@ -19,8 +19,10 @@ vi.mock('react-native-libsodium', async () => {
 import {
   createPasswordSalt,
   decryptString,
+  decryptStringWithDek,
   deriveCredentials,
   encryptString,
+  encryptStringWithDek,
   normalizeEmail,
 } from './index';
 import { createE2ee } from './core';
@@ -163,6 +165,41 @@ describe('encryptString/decryptString', () => {
     const payload = encryptString('secret note', cryptKey);
 
     expect(() => decryptString(payload, otherCredentials.cryptKey)).toThrow(
+      'Unable to decrypt data with the current password.',
+    );
+  });
+});
+
+describe('encryptStringWithDek/decryptStringWithDek', () => {
+  it('wraps a random DEK with the password-derived KEK and decrypts successfully', async () => {
+    const { cryptKey } = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      '00112233445566778899aabbccddeeff',
+    );
+    const payload = encryptStringWithDek('secret note', cryptKey);
+
+    expect(payload.encryptedDek.algorithm).toBe('xsalsa20-poly1305');
+    expect(payload.encryptedDek.version).toBe(1);
+    expect(payload.encryptedPayload.algorithm).toBe('xsalsa20-poly1305');
+    expect(payload.encryptedPayload.version).toBe(1);
+    expect(decryptStringWithDek(payload, cryptKey)).toBe('secret note');
+  });
+
+  it('fails to decrypt the wrapped DEK with a different crypt key', async () => {
+    const { cryptKey } = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      '00112233445566778899aabbccddeeff',
+    );
+    const otherCredentials = await deriveCredentials(
+      'person@example.com',
+      'correct horse',
+      'ffeeddccbbaa99887766554433221100',
+    );
+    const payload = encryptStringWithDek('secret note', cryptKey);
+
+    expect(() => decryptStringWithDek(payload, otherCredentials.cryptKey)).toThrow(
       'Unable to decrypt data with the current password.',
     );
   });

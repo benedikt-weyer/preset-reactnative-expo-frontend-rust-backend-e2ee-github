@@ -1,6 +1,7 @@
 mod m20260611_000001_create_users;
 mod m20260611_000002_add_user_auth_salt;
 mod m20260611_000003_create_notes;
+mod m20260612_000004_create_deks;
 
 use sea_orm_migration::prelude::*;
 
@@ -13,6 +14,7 @@ impl MigratorTrait for Migrator {
             Box::new(m20260611_000001_create_users::Migration),
             Box::new(m20260611_000002_add_user_auth_salt::Migration),
             Box::new(m20260611_000003_create_notes::Migration),
+            Box::new(m20260612_000004_create_deks::Migration),
         ]
     }
 }

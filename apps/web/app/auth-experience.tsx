@@ -5,12 +5,12 @@ import { ArrowRight, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react';
 
 import {
   createPasswordSalt,
-  decryptString,
+  decryptStringWithDek,
   deriveCredentials,
-  encryptString,
+  encryptStringWithDek,
   normalizeEmail,
   type CryptKey,
-  type EncryptedPayload,
+  type KekDekEncryptedPayload,
 } from '@repo/e2ee-auth/web';
 
 import { Button } from '@/components/ui/button';
@@ -43,7 +43,7 @@ type NoteDocument = {
 type DecryptedNote = {
   createdAt: string;
   id: string;
-  payload: EncryptedPayload;
+  payload: KekDekEncryptedPayload;
   title: string;
   content: string;
   updatedAt: string;
@@ -52,7 +52,7 @@ type DecryptedNote = {
 const featureNotes = [
   'The typed password stays in the browser and derives two keys locally.',
   'The backend sees only the derived auth key plus the per-account salt.',
-  'Each note is stored as one encrypted title-and-content document and addressed by a UUID.',
+  'Each note stores one encrypted document plus one wrapped per-resource DEK addressed by a UUID.',
 ];
 
 export function AuthExperience() {
@@ -261,7 +261,7 @@ export function AuthExperience() {
     setErrorMessage(null);
 
     try {
-      const encryptedPayload = encryptString(
+      const encryptedPayload = encryptStringWithDek(
         serializeNoteDocument({
           content: noteContent,
           title: noteTitle,
@@ -395,8 +395,9 @@ export function AuthExperience() {
                   </p>
                 </div>
                 <p className="text-sm leading-6 text-foreground/75">
-                  Create, update, and delete encrypted notes. The backend stores only ciphertext,
-                  and only the current password-derived crypt key can decrypt the note document.
+                  Create, update, and delete encrypted notes. The backend stores ciphertext plus a
+                  wrapped per-resource DEK, and only the current password-derived crypt key can
+                  unwrap that DEK and decrypt the note document.
                 </p>
                 <div className="flex items-center justify-between gap-3">
                   <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
@@ -610,7 +611,7 @@ function serializeNoteDocument(note: NoteDocument) {
 }
 
 function decryptNoteRecord(note: NoteResponse, cryptKey: CryptKey): DecryptedNote {
-  const decryptedDocument = deserializeNoteDocument(decryptString(note, cryptKey));
+  const decryptedDocument = deserializeNoteDocument(decryptStringWithDek(note, cryptKey));
 
   return {
     content: decryptedDocument.content,

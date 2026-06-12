@@ -10,7 +10,7 @@ use crate::{
     app_state::AppState,
     domains::{
         auth::AuthenticatedUser,
-        notes::{entity, service},
+        notes::service,
     },
     error::AppResult,
 };
@@ -27,6 +27,13 @@ pub fn router() -> Router<AppState> {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SaveNoteRequest {
+    encrypted_dek: EncryptedBlobRequest,
+    encrypted_payload: EncryptedBlobRequest,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedBlobRequest {
     algorithm: String,
     ciphertext_hex: String,
     nonce_hex: String,
@@ -37,11 +44,18 @@ pub struct SaveNoteRequest {
 #[serde(rename_all = "camelCase")]
 pub struct NoteResponse {
     id: Uuid,
+    encrypted_dek: EncryptedBlobResponse,
+    encrypted_payload: EncryptedBlobResponse,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EncryptedBlobResponse {
     algorithm: String,
     ciphertext_hex: String,
     nonce_hex: String,
-    created_at: String,
-    updated_at: String,
     version: i32,
 }
 
@@ -98,6 +112,13 @@ pub async fn delete_note(
 
 fn map_save_command(payload: SaveNoteRequest) -> service::SaveNoteCommand {
     service::SaveNoteCommand {
+        encrypted_dek: map_blob_request(payload.encrypted_dek),
+        encrypted_payload: map_blob_request(payload.encrypted_payload),
+    }
+}
+
+fn map_blob_request(payload: EncryptedBlobRequest) -> service::SaveEncryptedBlobCommand {
+    service::SaveEncryptedBlobCommand {
         algorithm: payload.algorithm,
         ciphertext_hex: payload.ciphertext_hex,
         nonce_hex: payload.nonce_hex,
@@ -105,14 +126,21 @@ fn map_save_command(payload: SaveNoteRequest) -> service::SaveNoteCommand {
     }
 }
 
-fn map_note_response(note: entity::Model) -> NoteResponse {
+fn map_note_response(note: service::StoredNote) -> NoteResponse {
     NoteResponse {
         id: note.id,
-        algorithm: note.algorithm,
-        ciphertext_hex: note.ciphertext_hex,
-        nonce_hex: note.nonce_hex,
-        created_at: note.created_at.to_rfc3339(),
-        updated_at: note.updated_at.to_rfc3339(),
-        version: note.version,
+        encrypted_dek: map_blob_response(note.encrypted_dek),
+        encrypted_payload: map_blob_response(note.encrypted_payload),
+        created_at: note.created_at,
+        updated_at: note.updated_at,
+    }
+}
+
+fn map_blob_response(blob: service::StoredEncryptedBlob) -> EncryptedBlobResponse {
+    EncryptedBlobResponse {
+        algorithm: blob.algorithm,
+        ciphertext_hex: blob.ciphertext_hex,
+        nonce_hex: blob.nonce_hex,
+        version: blob.version,
     }
 }

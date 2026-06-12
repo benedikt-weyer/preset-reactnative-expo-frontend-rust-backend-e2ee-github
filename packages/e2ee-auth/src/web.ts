@@ -40,5 +40,19 @@ const e2ee = createE2ee({
   },
 });
 
-export const { createPasswordSalt, decryptString, deriveCredentials, encryptString, normalizeEmail } = e2ee;
-export type { CryptKey, DerivedCredentials, EncryptedPayload } from './core';
+export const {
+  createPasswordSalt,
+  decryptString,
+  decryptStringWithDek,
+  deriveCredentials,
+  encryptString,
+  encryptStringWithDek,
+  normalizeEmail,
+} = e2ee;
+export type {
+  CryptKey,
+  DerivedCredentials,
+  EncryptedPayload,
+  KekDekEncryptedPayload,
+  KekWrappedPayload,
+} from './core';

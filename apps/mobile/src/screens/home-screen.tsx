@@ -3,8 +3,8 @@ import { Pressable, Text, TextInput, View } from 'react-native';
 
 import {
   type CryptKey,
-  decryptString,
-  encryptString,
+  decryptStringWithDek,
+  encryptStringWithDek,
 } from '@repo/e2ee-auth/native';
 
 import { ScreenShell } from '../components/screen-shell';
@@ -122,7 +122,7 @@ export function HomeScreen() {
     }
 
     try {
-      const encryptedPayload = encryptString(
+        const encryptedPayload = encryptStringWithDek(
         serializeNoteDocument({
           content: noteContent,
           title: noteTitle,
@@ -200,8 +200,8 @@ export function HomeScreen() {
         </Text>
         <Text className={`text-base leading-7 ${tokens.body}`}>
           The device derives a crypt key from your typed password and plain email.
-          That crypt key encrypts local data, while a separate derived auth key is
-          sent to the Rust backend for registration, login, and ciphertext sync.
+          That crypt key unwraps one random DEK per encrypted resource, while a separate derived
+          auth key is sent to the Rust backend for registration, login, and ciphertext sync.
         </Text>
       </View>
 
@@ -210,8 +210,9 @@ export function HomeScreen() {
           Notes vault
         </Text>
         <Text className={`text-base leading-7 ${tokens.body}`}>
-          Create, update, and delete encrypted notes. The backend stores only ciphertext,
-          and only the password-derived crypt key can decrypt the note document.
+          Create, update, and delete encrypted notes. The backend stores ciphertext plus a
+          wrapped per-resource DEK, and only the password-derived crypt key can unwrap that DEK
+          and decrypt the note document.
         </Text>
         <View className="gap-2">
           <Pressable
@@ -313,7 +314,7 @@ function serializeNoteDocument(note: NoteDocument) {
 }
 
 function decryptNoteRecord(note: NoteResponse, cryptKey: CryptKey): DecryptedNote {
-  const decryptedDocument = deserializeNoteDocument(decryptString(note, cryptKey));
+  const decryptedDocument = deserializeNoteDocument(decryptStringWithDek(note, cryptKey));
 
   return {
     content: decryptedDocument.content,
