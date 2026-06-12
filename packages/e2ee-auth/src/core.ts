@@ -1,5 +1,7 @@
 const AUTH_CONTEXT_PREFIX = utf8('auth:');
 const ENCRYPTION_CONTEXT_PREFIX = utf8('enc:');
+const KEK_SEED_CONTEXT_PREFIX = utf8('kek-seed:');
+const KEK_WRAP_CONTEXT_PREFIX = utf8('kek-wrap:');
 const AUTH_KEY_LENGTH = 64;
 const CRYPT_KEY_LENGTH = 64;
 const SHA512_BLOCK_BYTES = 128;
@@ -32,9 +34,36 @@ export type KekDekEncryptedPayload = {
   encryptedPayload: EncryptedPayload;
 };
 
+export type KekKeyPair = {
+  algorithm: 'ml-kem-768';
+  kekId: string;
+  privateKeyHex: string;
+  publicKeyHex: string;
+  version: 1;
+};
+
+export type KekKeyPairBytes = {
+  privateKey: Uint8Array;
+  publicKey: Uint8Array;
+};
+
+export type KekAsymmetricWrappedPayload = {
+  algorithm: 'ml-kem-768-private-wrap+xsalsa20-poly1305';
+  kekId: string;
+  nonceHex: string;
+  version: 2;
+  wrappedDekHex: string;
+};
+
+export type KekAsymmetricDekEncryptedPayload = {
+  encryptedDek: KekAsymmetricWrappedPayload;
+  encryptedPayload: EncryptedPayload;
+};
+
 export type E2eeDriver = {
   hash: (message: Uint8Array) => Uint8Array;
   hashBytes: number | (() => number);
+  deriveDeterministicKekKeyPair?: (seed: Uint8Array) => Promise<KekKeyPairBytes>;
   derivePasswordHash: (
     password: Uint8Array,
     salt: Uint8Array,
@@ -44,6 +73,7 @@ export type E2eeDriver = {
   encrypt: (message: Uint8Array, nonce: Uint8Array, key: Uint8Array) => Uint8Array;
   randomBytes: (size: number) => Uint8Array;
   ready: Promise<unknown>;
+  kekSeedBytes?: number | (() => number);
   saltBytes: number | (() => number);
   secretboxKeyBytes: number | (() => number);
   secretboxNonceBytes: number | (() => number);
@@ -194,14 +224,132 @@ export function createE2ee(driver: E2eeDriver) {
     }
   }
 
+  async function deriveKekKeyPair(cryptKey: CryptKey): Promise<KekKeyPair> {
+    await driver.ready;
+
+    const keyPair = await requireDeterministicKekKeyPair(
+      driver,
+      deriveKekSeed(driver, cryptKey),
+    );
+    const publicKeyHex = bytesToHex(keyPair.publicKey);
+
+    return {
+      algorithm: 'ml-kem-768',
+      kekId: publicKeyHex,
+      privateKeyHex: bytesToHex(keyPair.privateKey),
+      publicKeyHex,
+      version: 1,
+    };
+  }
+
+  async function encryptStringWithAsymmetricKek(
+    value: string,
+    cryptKey: CryptKey,
+  ): Promise<KekAsymmetricDekEncryptedPayload> {
+    await driver.ready;
+
+    const keyPair = await requireDeterministicKekKeyPair(
+      driver,
+      deriveKekSeed(driver, cryptKey),
+    );
+    const dek = driver.randomBytes(resolveSecretboxKeyBytes(driver));
+
+    return {
+      encryptedDek: encryptAsymmetricWrappedDekPayload(
+        driver,
+        dek,
+        deriveKekWrapKey(driver, keyPair.privateKey, resolveSecretboxKeyBytes(driver)),
+        bytesToHex(keyPair.publicKey),
+      ),
+      encryptedPayload: encryptBytesPayload(driver, utf8(value), dek),
+    };
+  }
+
+  async function decryptStringWithAsymmetricKek(
+    payload: KekAsymmetricDekEncryptedPayload,
+    cryptKey: CryptKey,
+  ) {
+    await driver.ready;
+
+    try {
+      const keyPair = await requireDeterministicKekKeyPair(
+        driver,
+        deriveKekSeed(driver, cryptKey),
+      );
+      const derivedKekId = bytesToHex(keyPair.publicKey);
+
+      if (derivedKekId !== payload.encryptedDek.kekId) {
+        throw new Error('The current password does not match the wrapped KEK keypair.');
+      }
+
+      const dek = decryptBytesPayload(
+        driver,
+        mapAsymmetricWrappedDekToEncryptedPayload(payload.encryptedDek),
+        deriveKekWrapKey(driver, keyPair.privateKey, resolveSecretboxKeyBytes(driver)),
+      );
+      const expectedDekLength = resolveSecretboxKeyBytes(driver);
+
+      if (dek.length !== expectedDekLength) {
+        throw new Error('Invalid decrypted DEK length.');
+      }
+
+      return new TextDecoder().decode(decryptBytesPayload(driver, payload.encryptedPayload, dek));
+    } catch {
+      throw new Error('Unable to decrypt data with the current password.');
+    }
+  }
+
+  async function rewrapAsymmetricEncryptedDek(
+    payload: KekAsymmetricDekEncryptedPayload,
+    currentCryptKey: CryptKey,
+    nextCryptKey: CryptKey,
+  ): Promise<KekAsymmetricWrappedPayload> {
+    await driver.ready;
+
+    try {
+      const currentKeyPair = await requireDeterministicKekKeyPair(
+        driver,
+        deriveKekSeed(driver, currentCryptKey),
+      );
+      const currentKekId = bytesToHex(currentKeyPair.publicKey);
+
+      if (currentKekId !== payload.encryptedDek.kekId) {
+        throw new Error('The current password does not match the wrapped KEK keypair.');
+      }
+
+      const dek = decryptBytesPayload(
+        driver,
+        mapAsymmetricWrappedDekToEncryptedPayload(payload.encryptedDek),
+        deriveKekWrapKey(driver, currentKeyPair.privateKey, resolveSecretboxKeyBytes(driver)),
+      );
+      const nextKeyPair = await requireDeterministicKekKeyPair(
+        driver,
+        deriveKekSeed(driver, nextCryptKey),
+      );
+
+      return encryptAsymmetricWrappedDekPayload(
+        driver,
+        dek,
+        deriveKekWrapKey(driver, nextKeyPair.privateKey, resolveSecretboxKeyBytes(driver)),
+        bytesToHex(nextKeyPair.publicKey),
+      );
+    } catch {
+      throw new Error('Unable to rewrap data with the current password.');
+    }
+  }
+
   return {
     createPasswordSalt,
     decryptString,
+    decryptStringWithAsymmetricKek,
     decryptStringWithDek,
+    deriveKekKeyPair,
     deriveCredentials,
     encryptString,
+    encryptStringWithAsymmetricKek,
     encryptStringWithDek,
     normalizeEmail,
+    rewrapAsymmetricEncryptedDek,
     rewrapEncryptedDek,
   };
 }
@@ -213,6 +361,19 @@ function deriveKek(driver: E2eeDriver, cryptKey: CryptKey, keyLength: number) {
     ENCRYPTION_CONTEXT_PREFIX,
     keyLength,
   );
+}
+
+function deriveKekSeed(driver: E2eeDriver, cryptKey: CryptKey) {
+  return deriveSubkey(
+    driver,
+    cryptKey,
+    KEK_SEED_CONTEXT_PREFIX,
+    resolveKekSeedBytes(driver),
+  );
+}
+
+function deriveKekWrapKey(driver: E2eeDriver, sharedSecret: Uint8Array, keyLength: number) {
+  return deriveSubkey(driver, sharedSecret, KEK_WRAP_CONTEXT_PREFIX, keyLength);
 }
 
 function deriveSubkey(
@@ -293,6 +454,10 @@ function resolveHashBytes(driver: E2eeDriver) {
   return resolveDriverSize(driver.hashBytes);
 }
 
+function resolveKekSeedBytes(driver: E2eeDriver) {
+  return resolveDriverSize(driver.kekSeedBytes ?? 32);
+}
+
 function resolveDriverSize(value: number | (() => number)) {
   return typeof value === 'function' ? value() : value;
 }
@@ -343,6 +508,23 @@ function encryptWrappedDekPayload(
   };
 }
 
+function encryptAsymmetricWrappedDekPayload(
+  driver: E2eeDriver,
+  value: Uint8Array,
+  key: Uint8Array,
+  kekId: string,
+): KekAsymmetricWrappedPayload {
+  const encryptedPayload = encryptBytesPayload(driver, value, key);
+
+  return {
+    algorithm: 'ml-kem-768-private-wrap+xsalsa20-poly1305',
+    kekId,
+    nonceHex: encryptedPayload.nonceHex,
+    version: 2,
+    wrappedDekHex: encryptedPayload.ciphertextHex,
+  };
+}
+
 function decryptBytesPayload(driver: E2eeDriver, payload: EncryptedPayload, key: Uint8Array) {
   return driver.decrypt(
     hexToBytes(payload.ciphertextHex),
@@ -358,6 +540,23 @@ function mapWrappedDekToEncryptedPayload(payload: KekWrappedPayload): EncryptedP
     nonceHex: payload.nonceHex,
     version: payload.version,
   };
+}
+
+function mapAsymmetricWrappedDekToEncryptedPayload(payload: KekAsymmetricWrappedPayload): EncryptedPayload {
+  return {
+    algorithm: 'xsalsa20-poly1305',
+    ciphertextHex: payload.wrappedDekHex,
+    nonceHex: payload.nonceHex,
+    version: 1,
+  };
+}
+
+async function requireDeterministicKekKeyPair(driver: E2eeDriver, seed: Uint8Array) {
+  if (!driver.deriveDeterministicKekKeyPair) {
+    throw new Error('This E2EE driver does not support deterministic ML-KEM KEK keypairs.');
+  }
+
+  return driver.deriveDeterministicKekKeyPair(seed);
 }
 
 function utf8(value: string) {

@@ -25,7 +25,7 @@ pub struct EncryptedBlob {
 
 pub struct WrappedDek {
     pub algorithm: String,
-    pub kek_id: Uuid,
+    pub kek_id: String,
     pub nonce_hex: String,
     pub version: i32,
     pub wrapped_dek_hex: String,
@@ -194,7 +194,7 @@ where
 pub async fn summarize_kek_usage_for_user<C>(
     db: &C,
     user_id: Uuid,
-    latest_kek_id: Uuid,
+    latest_kek_id: &str,
 ) -> AppResult<KekUsageSummary>
 where
     C: ConnectionTrait,

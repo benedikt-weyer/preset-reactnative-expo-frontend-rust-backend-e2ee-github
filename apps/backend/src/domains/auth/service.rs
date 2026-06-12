@@ -23,6 +23,7 @@ use crate::{
 pub struct RegisterCommand {
     pub email: String,
     pub auth_key: String,
+    pub kek_id: String,
     pub salt_hex: String,
 }
 
@@ -32,6 +33,7 @@ pub struct LoginCommand {
 }
 
 pub struct RotatePasswordCommand {
+    pub kek_id: String,
     pub new_auth_key: String,
 }
 
@@ -52,7 +54,7 @@ pub struct KekMigrationStatus {
     pub all_deks_use_latest_kek: bool,
     pub latest_kek_dek_count: u64,
     pub latest_kek_epoch_version: i32,
-    pub latest_kek_id: Uuid,
+    pub latest_kek_id: String,
     pub pending_dek_count: u64,
     pub total_dek_count: u64,
 }
@@ -60,7 +62,7 @@ pub struct KekMigrationStatus {
 #[derive(Clone, Debug)]
 pub struct KekMetadata {
     pub kek_epoch_version: i32,
-    pub kek_id: Uuid,
+    pub kek_id: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -87,6 +89,7 @@ pub struct AuthenticatedUser {
 pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<AuthSession> {
     let email = normalize_email(&command.email)?;
     validate_auth_key(&command.auth_key)?;
+    let kek_id = normalize_kek_id(&command.kek_id)?;
     let auth_salt = normalize_auth_salt(&command.salt_hex)?;
 
     if repository::find_user_by_email(&state.db, &email)
@@ -114,8 +117,14 @@ pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<A
     )
     .await?;
 
-    let initial_kek_metadata = repository::insert_kek_metadata(&transaction, new_user.id, 1, now)
-        .await?;
+    let initial_kek_metadata = repository::insert_kek_metadata(
+        &transaction,
+        new_user.id,
+        kek_id,
+        1,
+        now,
+    )
+    .await?;
 
     transaction
         .commit()
@@ -175,6 +184,7 @@ pub async fn rotate_password(
     command: RotatePasswordCommand,
 ) -> AppResult<AuthSession> {
     validate_auth_key(&command.new_auth_key)?;
+    let kek_id = normalize_kek_id(&command.kek_id)?;
 
     let transaction = state
         .db
@@ -198,6 +208,7 @@ pub async fn rotate_password(
     repository::insert_kek_metadata(
         &transaction,
         authenticated_user.user_id,
+        kek_id,
         next_epoch_version,
         now,
     )
@@ -227,7 +238,7 @@ pub async fn get_kek_migration_status(
     let usage_summary = notes::repository::summarize_kek_usage_for_user(
         &state.db,
         authenticated_user.user_id,
-        latest_kek.kek_id,
+        &latest_kek.kek_id,
     )
     .await?;
     let pending_dek_count = usage_summary
@@ -238,7 +249,7 @@ pub async fn get_kek_migration_status(
         all_deks_use_latest_kek: pending_dek_count == 0,
         latest_kek_dek_count: usage_summary.total_latest_kek_deks,
         latest_kek_epoch_version: latest_kek.kek_epoch_version,
-        latest_kek_id: latest_kek.kek_id,
+        latest_kek_id: latest_kek.kek_id.clone(),
         pending_dek_count,
         total_dek_count: usage_summary.total_deks,
     })
@@ -317,6 +328,22 @@ fn normalize_auth_salt(auth_salt: &str) -> AppResult<String> {
     if decoded.len() != AUTH_SALT_BYTES {
         return Err(AppError::bad_request(
             "saltHex must contain a 16-byte password salt",
+        ));
+    }
+
+    Ok(normalized)
+}
+
+fn normalize_kek_id(kek_id: &str) -> AppResult<String> {
+    const ML_KEM_768_PUBLIC_KEY_BYTES: usize = 1184;
+
+    let normalized = kek_id.trim().to_ascii_lowercase();
+    let decoded = hex::decode(&normalized)
+        .map_err(|_| AppError::bad_request("kekId must be a valid hexadecimal string"))?;
+
+    if decoded.len() != ML_KEM_768_PUBLIC_KEY_BYTES {
+        return Err(AppError::bad_request(
+            "kekId must contain an ML-KEM-768 public key",
         ));
     }
 

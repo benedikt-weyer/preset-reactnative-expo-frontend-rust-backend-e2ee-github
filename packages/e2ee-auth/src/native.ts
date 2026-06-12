@@ -15,13 +15,20 @@ import {
   ready,
 } from 'react-native-libsodium';
 
+import { createNativeOqsKekAdapter } from '@repo/oqs-kek/native';
+
 import { createE2ee } from './core';
 
 loadSumoVersion();
 
+const oqsKek = createNativeOqsKekAdapter();
+
 const e2ee = createE2ee({
   decrypt(ciphertext, nonce, key) {
     return crypto_secretbox_open_easy(ciphertext, nonce, key);
+  },
+  async deriveDeterministicKekKeyPair(seed) {
+    return oqsKek.deriveDeterministicKeyPair(seed);
   },
   derivePasswordHash(password, salt, keyLength) {
     return crypto_pwhash(
@@ -40,6 +47,7 @@ const e2ee = createE2ee({
     return crypto_hash(message);
   },
   hashBytes: crypto_hash_BYTES,
+  kekSeedBytes: 32,
   randomBytes: randombytes_buf,
   ready,
   saltBytes: crypto_pwhash_SALTBYTES,
@@ -50,17 +58,24 @@ const e2ee = createE2ee({
 export const {
   createPasswordSalt,
   decryptString,
+  decryptStringWithAsymmetricKek,
   decryptStringWithDek,
+  deriveKekKeyPair,
   deriveCredentials,
   encryptString,
+  encryptStringWithAsymmetricKek,
   encryptStringWithDek,
   normalizeEmail,
+  rewrapAsymmetricEncryptedDek,
   rewrapEncryptedDek,
 } = e2ee;
 export type {
   CryptKey,
   DerivedCredentials,
   EncryptedPayload,
+  KekAsymmetricDekEncryptedPayload,
+  KekAsymmetricWrappedPayload,
+  KekKeyPair,
   KekDekEncryptedPayload,
   KekWrappedPayload,
 } from './core';

@@ -1,10 +1,17 @@
 import sodium from 'libsodium-wrappers-sumo';
 
+import { createWebOqsKekAdapter } from '@repo/oqs-kek/web';
+
 import { createE2ee } from './core';
+
+const oqsKek = createWebOqsKekAdapter();
 
 const e2ee = createE2ee({
   decrypt(ciphertext, nonce, key) {
     return sodium.crypto_secretbox_open_easy(ciphertext, nonce, key);
+  },
+  async deriveDeterministicKekKeyPair(seed) {
+    return oqsKek.deriveDeterministicKeyPair(seed);
   },
   derivePasswordHash(password, salt, keyLength) {
     return sodium.crypto_pwhash(
@@ -21,6 +28,9 @@ const e2ee = createE2ee({
   },
   hash(message) {
     return sodium.crypto_hash(message);
+  },
+  kekSeedBytes() {
+    return 32;
   },
   hashBytes() {
     return sodium.crypto_hash_BYTES;
@@ -43,17 +53,24 @@ const e2ee = createE2ee({
 export const {
   createPasswordSalt,
   decryptString,
+  decryptStringWithAsymmetricKek,
   decryptStringWithDek,
+  deriveKekKeyPair,
   deriveCredentials,
   encryptString,
+  encryptStringWithAsymmetricKek,
   encryptStringWithDek,
   normalizeEmail,
+  rewrapAsymmetricEncryptedDek,
   rewrapEncryptedDek,
 } = e2ee;
 export type {
   CryptKey,
   DerivedCredentials,
   EncryptedPayload,
+  KekAsymmetricDekEncryptedPayload,
+  KekAsymmetricWrappedPayload,
+  KekKeyPair,
   KekDekEncryptedPayload,
   KekWrappedPayload,
 } from './core';

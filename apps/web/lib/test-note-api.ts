@@ -1,4 +1,4 @@
-import type { KekDekEncryptedPayload } from '@repo/e2ee-auth/web';
+import type { KekAsymmetricDekEncryptedPayload } from '@repo/e2ee-auth/web';
 
 type AuthenticatedRequest = {
   baseUrl: string;
@@ -10,14 +10,14 @@ type NoteByIdRequest = AuthenticatedRequest & {
 };
 
 type SaveNoteRequest = AuthenticatedRequest & {
-  payload: KekDekEncryptedPayload;
+  payload: KekAsymmetricDekEncryptedPayload;
 };
 
 type UpdateNoteRequest = SaveNoteRequest & {
   noteId: string;
 };
 
-export type NoteResponse = KekDekEncryptedPayload & {
+export type NoteResponse = KekAsymmetricDekEncryptedPayload & {
   createdAt: string;
   id: string;
   updatedAt: string;
@@ -156,7 +156,7 @@ function validatePayload(
   };
 }
 
-function isWrappedDekPayload(value: unknown): value is KekDekEncryptedPayload['encryptedDek'] {
+function isWrappedDekPayload(value: unknown): value is KekAsymmetricDekEncryptedPayload['encryptedDek'] {
   return !!value &&
     typeof value === 'object' &&
     'algorithm' in value &&
@@ -171,7 +171,7 @@ function isWrappedDekPayload(value: unknown): value is KekDekEncryptedPayload['e
     typeof value.wrappedDekHex === 'string';
 }
 
-function isEncryptedPayload(value: unknown): value is KekDekEncryptedPayload['encryptedPayload'] {
+function isEncryptedPayload(value: unknown): value is KekAsymmetricDekEncryptedPayload['encryptedPayload'] {
   return !!value &&
     typeof value === 'object' &&
     'algorithm' in value &&

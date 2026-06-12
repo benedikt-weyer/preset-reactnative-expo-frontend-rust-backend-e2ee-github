@@ -12,7 +12,7 @@ impl MigrationTrait for Migration {
                     .table(Deks::Table)
                     .if_not_exists()
                     .col(ColumnDef::new(Deks::ResourceId).uuid().not_null().primary_key())
-                    .col(ColumnDef::new(Deks::KekId).uuid().not_null())
+                    .col(ColumnDef::new(Deks::KekPublicKey).text().not_null())
                     .col(ColumnDef::new(Deks::UserId).uuid().not_null())
                     .col(ColumnDef::new(Deks::Algorithm).string().not_null())
                     .col(ColumnDef::new(Deks::WrappedDekHex).text().not_null())
@@ -33,8 +33,8 @@ impl MigrationTrait for Migration {
                     .foreign_key(
                         ForeignKey::create()
                             .name("fk-deks-kek-id")
-                            .from(Deks::Table, Deks::KekId)
-                            .to(KekMetadata::Table, KekMetadata::KekId)
+                            .from(Deks::Table, Deks::KekPublicKey)
+                            .to(KekMetadata::Table, KekMetadata::KekPublicKey)
                             .on_delete(ForeignKeyAction::Restrict),
                     )
                     .foreign_key(
@@ -71,7 +71,7 @@ impl MigrationTrait for Migration {
 enum Deks {
     Table,
     ResourceId,
-    KekId,
+    KekPublicKey,
     UserId,
     Algorithm,
     WrappedDekHex,
@@ -84,7 +84,7 @@ enum Deks {
 #[derive(DeriveIden)]
 enum KekMetadata {
     Table,
-    KekId,
+    KekPublicKey,
 }
 
 #[derive(DeriveIden)]

@@ -11,7 +11,12 @@ impl MigrationTrait for Migration {
                 Table::create()
                     .table(KekMetadata::Table)
                     .if_not_exists()
-                    .col(ColumnDef::new(KekMetadata::KekId).uuid().not_null().primary_key())
+                    .col(
+                        ColumnDef::new(KekMetadata::KekPublicKey)
+                            .text()
+                            .not_null()
+                            .primary_key(),
+                    )
                     .col(ColumnDef::new(KekMetadata::UserId).uuid().not_null())
                     .col(ColumnDef::new(KekMetadata::KekEpochVersion).integer().not_null())
                     .col(
@@ -54,7 +59,7 @@ impl MigrationTrait for Migration {
 #[derive(DeriveIden)]
 enum KekMetadata {
     Table,
-    KekId,
+    KekPublicKey,
     UserId,
     KekEpochVersion,
     CreatedAt,

@@ -11,11 +11,11 @@ The current design splits password handling into two responsibilities:
 - the device derives keys locally from `password + salt`
 - the backend only verifies a derived auth key and never receives the raw password
 - note content is encrypted and decrypted locally on the device with a per-resource DEK
-- each active KEK is tracked server-side with a `kek_id` and `kek_epoch_version` so clients can relink rotated passwords
+- each active KEK is tracked server-side with a client-derived public-key `kek_id` and a `kek_epoch_version` so clients can relink rotated passwords
 
 That means the backend participates in login, account creation, and token
 issuance, plus ciphertext sync, but it never receives plaintext notes, raw DEKs,
-or the unwrapped KEK.
+or the unwrapped KEK private key.
 
 ```plantuml format="svg_inline" alt="High-level auth and E2EE flow" title="High-level auth and E2EE flow"
 @startuml
@@ -27,8 +27,8 @@ actor User
 rectangle "Mobile / Web Client" as Client {
    component "Normalize email" as Normalize
    component "Derive cryptKey\nArgon2id(password + salt)" as Kdf
-   component "Derive authKey / KEK\nHKDF-SHA512" as Hkdf
-   component "Encrypt notes with DEK\nand wrap DEK with KEK" as Encrypt
+   component "Derive authKey / KEK keypair\nHKDF-SHA512 + seeded ML-KEM" as Hkdf
+   component "Encrypt notes with DEK\nand wrap DEK with KEK private key" as Encrypt
    database "Local keyring\nlinked KEKs by kek_id" as Keyring
 }
 
@@ -42,7 +42,7 @@ User --> Normalize
 Normalize --> Kdf
 Kdf --> Hkdf
 Hkdf --> Keyring
-Hkdf --> Backend : register/login with authKey
+Hkdf --> Backend : register/login with authKey + kekId
 Encrypt --> Backend : sync ciphertext only
 Keyring --> Encrypt
 Backend --> Users
@@ -61,9 +61,10 @@ end note
 | Purpose | Algorithm | Where used |
 | --- | --- | --- |
 | Password-based key derivation | Argon2id via libsodium | derive the per-user `cryptKey` |
-| Subkey derivation | HKDF-SHA512 | derive the auth subkey and the KEK from `cryptKey` |
+| Subkey derivation | HKDF-SHA512 | derive the auth subkey, KEK seed, and DEK wrap key material |
+| KEK identity | Deterministic ML-KEM-768 keypair derivation | derive a stable KEK public/private keypair from the seeded local secret |
 | Resource encryption | XSalsa20-Poly1305 via libsodium `crypto_secretbox` | encrypt and decrypt note documents with random DEKs |
-| DEK wrapping | XSalsa20-Poly1305 via libsodium `crypto_secretbox` | encrypt and decrypt each resource DEK with the derived KEK |
+| DEK wrapping | XSalsa20-Poly1305 via libsodium `crypto_secretbox` | encrypt and decrypt each resource DEK with a wrap key derived from the KEK private key |
 | Backend auth-key storage | SHA-512 hash of `authKey` | store a verifier instead of the raw derived auth key |
 | Session tokens | JWT signed with backend secret | issue access and refresh tokens |
 
@@ -76,10 +77,10 @@ end note
 
 ## Flow summary
 
-1. Registration generates the user salt locally, derives `cryptKey`, derives `authKey`, and sends only `authKey` plus `saltHex` to the backend.
-2. Login fetches the stored salt first, then re-derives `cryptKey` and `authKey` client-side before backend verification.
-3. Password rotation updates the backend verifier and creates a new KEK epoch without changing the salt.
-4. Note sync encrypts note payloads with per-note DEKs and wraps those DEKs with the currently active KEK.
+1. Registration generates the user salt locally, derives `cryptKey`, derives `authKey`, derives a KEK keypair, and sends `authKey`, `saltHex`, and the KEK public key as `kekId` to the backend.
+2. Login fetches the stored salt first, then re-derives `cryptKey`, `authKey`, and the current KEK keypair client-side before backend verification.
+3. Password rotation updates the backend verifier and creates a new KEK epoch from a newly derived public key without changing the salt.
+4. Note sync encrypts note payloads with per-note DEKs and wraps those DEKs with a wrap key derived from the currently active KEK private key.
 5. KEK migration rewraps DEKs in place until all encrypted rows point at the newest `kek_id`.
 
 ```plantuml format="svg_inline" alt="Top-level auth and note lifecycle" title="Top-level auth and note lifecycle"
@@ -90,21 +91,22 @@ start
 
 if (New account?) then (yes)
    :Generate random salt locally;
-   :Derive cryptKey and authKey;
+   :Derive cryptKey, authKey,
+   and kekId;
    :POST /api/auth/register;
 else (no)
    :POST /api/auth/salt;
-   :Derive cryptKey and authKey
-   from password + returned salt;
+   :Derive cryptKey, authKey,
+   and kekId from password + returned salt;
    :POST /api/auth/login;
 endif
 
-:Client stores linked KEKs by kek_id;
+:Client stores linked KEK keypairs by kek_id;
 
 if (Saving note?) then (yes)
    :Generate per-note DEK;
    :Encrypt note with DEK;
-   :Wrap DEK with active KEK;
+   :Wrap DEK with active KEK private key;
    :POST/PUT encrypted payload and wrapped DEK;
 else (loading)
    :Fetch encrypted payload + wrapped DEK;
@@ -114,7 +116,7 @@ else (loading)
 endif
 
 if (Password rotated?) then (yes)
-   :Derive new authKey and KEK locally;
+   :Derive new authKey and KEK keypair locally;
    :POST /api/auth/rotate-password;
    :Rewrap old DEKs onto newest kek_id;
 endif
@@ -127,5 +129,5 @@ stop
 
 - The backend receives a derived auth key, never the raw password.
 - Every encrypted resource row gets its own random DEK.
-- Wrapped DEKs stay tied to a server-tracked `kek_id`, which makes password rotation explicit and auditable.
+- Wrapped DEKs stay tied to a client-derived public-key `kek_id`, which makes password rotation explicit and auditable.
 - Clients must retain or relink older KEKs locally until all ciphertext has been migrated to the newest epoch.

@@ -16,7 +16,7 @@ For each encrypted resource row, the backend also stores:
 
 - the encrypted resource payload in its own table, for example `notes`
 - one wrapped DEK in the `deks` table
-- `kek_id` on the DEK row, which links the wrapped DEK to one server-tracked KEK epoch
+- `kek_id` on the DEK row, which links the wrapped DEK to one public-key-based KEK epoch
 - `resource_id` on the DEK row, which points at the encrypted row id
 - `user_id` on the DEK row, which binds the wrapped DEK to the owning user
 - `wrapped_dek_hex` on the DEK row, which stores the wrapped DEK ciphertext
@@ -24,7 +24,7 @@ For each encrypted resource row, the backend also stores:
 
 For each active KEK, the backend also stores one `kek_metadata` row with:
 
-- `kek_id`, generated server-side
+- `kek_id`, supplied by the client as the KEK public key
 - `kek_epoch_version`, incremented per user for rotations
 - `user_id`, which scopes that KEK metadata row to one account
 
@@ -44,7 +44,7 @@ The backend does not store:
 
 The client stores locally:
 
-- linked KEKs keyed by `kek_id`
+- linked KEK keypairs keyed by `kek_id`
 - the latest known `kek_epoch_version` values returned by the backend
 - any older active KEKs that were relinked with older passwords during login
 - temporary client-side migration progress while rewrapping DEKs to a new epoch
@@ -136,7 +136,7 @@ stop
 - Existing accounts and encrypted note rows created under older schemes are not compatible with the current flow.
 - The email is an identifier now, not an input to the password KDF.
 - Every encrypted resource row gets its own client-generated random DEK.
-- Every wrapped DEK is linked to a specific `kek_id`, which allows password rotations without reusing a single long-lived KEK identifier.
+- Every wrapped DEK is linked to a specific public-key `kek_id`, which allows password rotations without reusing a single long-lived KEK identifier.
 - Clients must keep older linked KEKs locally if older ciphertext rows are still active.
 - Rotating the password is not finished until the client verifies that every DEK row was rewrapped onto the newest KEK epoch.
 - The backend can store and serve encrypted notes, but it still cannot decrypt them.

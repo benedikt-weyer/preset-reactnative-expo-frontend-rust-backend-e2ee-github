@@ -18,6 +18,7 @@ export type LoginApiRequest = BaseAuthApiRequest & {
 };
 
 export type RegisterApiRequest = LoginApiRequest & {
+  kekId: string;
   saltHex: string;
 };
 
@@ -37,6 +38,7 @@ export type PasswordSaltResponse = {
 };
 
 export type RotatePasswordApiRequest = AuthenticatedApiRequest & {
+  kekId: string;
   newAuthKey: string;
 };
 
@@ -92,6 +94,7 @@ export async function rotatePasswordRequest(request: RotatePasswordApiRequest) {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
+      kekId: request.kekId,
       newAuthKey: request.newAuthKey,
     }),
   });
@@ -148,6 +151,7 @@ async function postAuthRequest(
     body: JSON.stringify({
       authKey: request.authKey,
       email: request.email,
+      ...('kekId' in request ? { kekId: request.kekId } : {}),
       ...('saltHex' in request ? { saltHex: request.saltHex } : {}),
     }),
   });

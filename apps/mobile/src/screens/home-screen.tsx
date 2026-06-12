@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
 
 import {
-  decryptStringWithDek,
-  encryptStringWithDek,
+  decryptStringWithAsymmetricKek,
+  encryptStringWithAsymmetricKek,
   deriveCredentials,
-  rewrapEncryptedDek,
+  rewrapAsymmetricEncryptedDek,
 } from '@repo/e2ee-auth/native';
 
 import { ScreenShell } from '../components/screen-shell';
@@ -95,7 +95,7 @@ export function HomeScreen() {
         }
 
         const decryptedNotes = sortNotes(
-          remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks)),
+          await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
         );
 
         setNotes(decryptedNotes);
@@ -154,13 +154,12 @@ export function HomeScreen() {
     const activeLinkedKek = requireLinkedKek(linkedKeks, activeKekId);
 
     try {
-      const encryptedPayload = encryptStringWithDek(
+      const encryptedPayload = await encryptStringWithAsymmetricKek(
         serializeNoteDocument({
           content: noteContent,
           title: noteTitle,
         }),
         activeLinkedKek.cryptKey,
-        activeLinkedKek.kekId,
       );
       const savedNote = selectedNoteId
         ? await updateNote({
@@ -175,7 +174,7 @@ export function HomeScreen() {
             token: session.token,
           });
 
-      const decryptedNote = decryptNoteRecord(savedNote, linkedKeks);
+      const decryptedNote = await decryptNoteRecord(savedNote, linkedKeks);
       const nextNotes = sortNotes([
         decryptedNote,
         ...notes.filter((note) => note.id !== decryptedNote.id),
@@ -294,11 +293,10 @@ export function HomeScreen() {
           baseUrl: backendUrl,
           noteId: note.id,
           payload: {
-            encryptedDek: rewrapEncryptedDek(
+            encryptedDek: await rewrapAsymmetricEncryptedDek(
               note,
               currentLinkedKek.cryptKey,
               latestLinkedKek.cryptKey,
-              latestLinkedKek.kekId,
             ),
             encryptedPayload: note.encryptedPayload,
           },
@@ -537,7 +535,7 @@ function serializeNoteDocument(note: NoteDocument) {
   });
 }
 
-function decryptNoteRecord(note: NoteResponse, linkedKeks: { cryptKey: Uint8Array; kekId: string }[]): DecryptedNote {
+async function decryptNoteRecord(note: NoteResponse, linkedKeks: { cryptKey: Uint8Array; kekId: string }[]): Promise<DecryptedNote> {
   const linkedKek = linkedKeks.find((entry) => entry.kekId === note.encryptedDek.kekId);
 
   if (!linkedKek) {
@@ -547,7 +545,7 @@ function decryptNoteRecord(note: NoteResponse, linkedKeks: { cryptKey: Uint8Arra
   }
 
   const decryptedDocument = deserializeNoteDocument(
-    decryptStringWithDek(note, linkedKek.cryptKey),
+    await decryptStringWithAsymmetricKek(note, linkedKek.cryptKey),
   );
 
   return {

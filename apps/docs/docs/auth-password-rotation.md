@@ -10,12 +10,13 @@ starts a new KEK epoch:
 
 1. The authenticated client asks the user for a new password.
 2. The client derives a new `cryptKey` and `authKey` locally from `newPassword + existing saltHex`.
-3. The client sends the new derived `authKey` to `POST /api/auth/rotate-password` with the current access token.
-4. The backend updates `auth_key_hash` for that user.
-5. The backend inserts a new `kek_metadata` row with a fresh server-generated `kek_id` and the next `kek_epoch_version`.
-6. The backend returns the updated KEK metadata list.
-7. The client links the new locally derived KEK to that newest `kek_id`.
-8. The client starts a KEK migration pass that rewraps each stored DEK onto the newest KEK epoch.
+3. The client deterministically derives a new ML-KEM-768 KEK keypair from that `cryptKey` and uses the public key as the next `kekId`.
+4. The client sends the new derived `authKey` and `kekId` to `POST /api/auth/rotate-password` with the current access token.
+5. The backend updates `auth_key_hash` for that user.
+6. The backend inserts a new `kek_metadata` row with the client-derived public key as `kek_id` and the next `kek_epoch_version`.
+7. The backend returns the updated KEK metadata list.
+8. The client links the new locally derived KEK keypair to that newest `kek_id`.
+9. The client starts a KEK migration pass that rewraps each stored DEK onto the newest KEK epoch.
 
 The salt stays unchanged so the client can still derive older KEKs from older
 passwords when an older epoch still has encrypted rows assigned to it.
@@ -34,13 +35,13 @@ database "KEK metadata" as KekMeta
 User -> Client: Enter new password
 Client -> Shared: derive cryptKey(newPassword, existing saltHex)
 Shared --> Client: new cryptKey
-Client -> Shared: derive authKey and KEK from new cryptKey
-Shared --> Client: new authKey + new KEK
-Client -> Api: POST /api/auth/rotate-password\nauthKey
+Client -> Shared: derive authKey and KEK keypair from new cryptKey
+Shared --> Client: new authKey + kekId
+Client -> Api: POST /api/auth/rotate-password\nauthKey, kekId
 Api -> Users: Replace auth_key_hash
 Api -> KekMeta: Insert next kek_id and kek_epoch_version
 Api --> Client: Updated KEK metadata list
-Client -> Client: Link new KEK to newest kek_id
+Client -> Client: Link new KEK keypair to newest kek_id
 Client -> Client: Start DEK rewrap migration
 @enduml
 ```
@@ -52,8 +53,8 @@ wrapped DEKs are rotated:
 
 1. The client fetches the current encrypted rows.
 2. For each row whose `encryptedDek.kekId` is not the newest `kek_id`, the client:
-   - decrypts the wrapped DEK locally with the old linked KEK
-   - re-encrypts the same DEK locally with the newest linked KEK
+   - derives the old wrap key locally from the old linked KEK private key and unwraps the DEK
+   - derives the new wrap key locally from the newest linked KEK private key and re-encrypts the same DEK
    - sends `PUT /api/notes/{note_id}` with the unchanged encrypted payload and the updated wrapped DEK
 3. The backend updates the stored `wrapped_dek_hex`, `nonce_hex`, and `kek_id` on the existing DEK row.
 4. The client calls `GET /api/auth/kek-status` for a final verification pass.
@@ -73,8 +74,10 @@ while (Rows left to inspect?) is (yes)
     :Leave row unchanged;
   else (no)
     if (Old KEK linked locally?) then (yes)
-      :Unwrap DEK with old KEK;
-      :Rewrap same DEK with newest KEK;
+      :Derive old wrap key from old KEK private key;
+      :Unwrap DEK with old wrap key;
+      :Derive new wrap key from newest KEK private key;
+      :Rewrap same DEK with new wrap key;
       :PUT /api/notes/{note_id}
       with unchanged ciphertext
       and updated wrapped DEK;

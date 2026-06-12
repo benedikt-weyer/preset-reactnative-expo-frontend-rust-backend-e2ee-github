@@ -35,12 +35,14 @@ pub struct LoginRequest {
 pub struct RegisterRequest {
     email: String,
     auth_key: String,
+    kek_id: String,
     salt_hex: String,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RotatePasswordRequest {
+    kek_id: String,
     new_auth_key: String,
 }
 
@@ -71,7 +73,7 @@ pub struct SaltResponse {
 #[serde(rename_all = "camelCase")]
 pub struct KekMetadataResponse {
     kek_epoch_version: i32,
-    kek_id: Uuid,
+    kek_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -80,7 +82,7 @@ pub struct KekMigrationStatusResponse {
     all_deks_use_latest_kek: bool,
     latest_kek_dek_count: u64,
     latest_kek_epoch_version: i32,
-    latest_kek_id: Uuid,
+    latest_kek_id: String,
     pending_dek_count: u64,
     total_dek_count: u64,
 }
@@ -94,6 +96,7 @@ pub async fn register(
         service::RegisterCommand {
             email: payload.email,
             auth_key: payload.auth_key,
+            kek_id: payload.kek_id,
             salt_hex: payload.salt_hex,
         },
     )
@@ -143,6 +146,7 @@ pub async fn rotate_password(
         &state,
         &authenticated_user,
         service::RotatePasswordCommand {
+            kek_id: payload.kek_id,
             new_auth_key: payload.new_auth_key,
         },
     )

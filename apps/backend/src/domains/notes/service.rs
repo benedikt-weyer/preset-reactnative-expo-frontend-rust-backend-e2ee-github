@@ -177,18 +177,17 @@ fn validate_payload(payload: &SaveNoteCommand) -> AppResult<()> {
 }
 
 fn validate_wrapped_dek(payload: &SaveWrappedDekCommand) -> AppResult<()> {
-    if payload.algorithm.trim() != "xsalsa20-poly1305" {
+    if payload.algorithm.trim() != "ml-kem-768-private-wrap+xsalsa20-poly1305" {
         return Err(AppError::validation(
-            "encryptedDek.algorithm must be xsalsa20-poly1305",
+            "encryptedDek.algorithm must be ml-kem-768-private-wrap+xsalsa20-poly1305",
         ));
     }
 
-    if payload.version != 1 {
-        return Err(AppError::validation("encryptedDek.version must be 1"));
+    if payload.version != 2 {
+        return Err(AppError::validation("encryptedDek.version must be 2"));
     }
 
-    Uuid::parse_str(payload.kek_id.trim())
-        .map_err(|_| AppError::validation("encryptedDek.kekId must be a valid uuid"))?;
+    normalize_kek_id_field(&payload.kek_id, "encryptedDek.kekId")?;
     normalize_hex_field(&payload.wrapped_dek_hex, "encryptedDek.wrappedDekHex")?;
     normalize_hex_field(&payload.nonce_hex, "encryptedDek.nonceHex")?;
 
@@ -224,8 +223,7 @@ fn map_save_blob(payload: &SaveEncryptedBlobCommand) -> repository::EncryptedBlo
 fn map_wrapped_dek(payload: &SaveWrappedDekCommand) -> AppResult<repository::WrappedDek> {
     Ok(repository::WrappedDek {
         algorithm: payload.algorithm.trim().to_owned(),
-        kek_id: Uuid::parse_str(payload.kek_id.trim())
-            .map_err(|_| AppError::validation("encryptedDek.kekId must be a valid uuid"))?,
+        kek_id: normalize_kek_id_field(&payload.kek_id, "encryptedDek.kekId")?,
         nonce_hex: payload.nonce_hex.trim().to_owned(),
         version: payload.version,
         wrapped_dek_hex: payload.wrapped_dek_hex.trim().to_owned(),
@@ -237,7 +235,7 @@ fn map_stored_note(stored_note: repository::StoredNote) -> StoredNote {
         created_at: stored_note.note.created_at.to_rfc3339(),
         encrypted_dek: StoredWrappedDek {
             algorithm: stored_note.dek.algorithm,
-            kek_id: stored_note.dek.kek_id.to_string(),
+            kek_id: stored_note.dek.kek_id,
             nonce_hex: stored_note.dek.nonce_hex,
             version: stored_note.dek.version,
             wrapped_dek_hex: stored_note.dek.wrapped_dek_hex,
@@ -264,4 +262,30 @@ fn normalize_hex_field(value: &str, field_name: &str) -> AppResult<()> {
         .map_err(|_| AppError::validation(format!("{field_name} must be valid hex")))?;
 
     Ok(())
+}
+
+fn normalize_exact_hex_field(value: &str, field_name: &str, expected_bytes: usize) -> AppResult<()> {
+    let normalized = value.trim().to_ascii_lowercase();
+
+    if normalized.is_empty() {
+        return Err(AppError::validation(format!("{field_name} is required")));
+    }
+
+    let decoded = hex::decode(&normalized)
+        .map_err(|_| AppError::validation(format!("{field_name} must be valid hex")))?;
+
+    if decoded.len() != expected_bytes {
+        return Err(AppError::validation(format!(
+            "{field_name} must contain exactly {expected_bytes} bytes"
+        )));
+    }
+
+    Ok(())
+}
+
+fn normalize_kek_id_field(value: &str, field_name: &str) -> AppResult<String> {
+    const ML_KEM_768_PUBLIC_KEY_BYTES: usize = 1184;
+
+    normalize_exact_hex_field(value, field_name, ML_KEM_768_PUBLIC_KEY_BYTES)?;
+    Ok(value.trim().to_ascii_lowercase())
 }

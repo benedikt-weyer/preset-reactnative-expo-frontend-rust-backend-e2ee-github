@@ -5,7 +5,7 @@ use sea_orm::entity::prelude::*;
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false)]
     pub resource_id: Uuid,
-    pub kek_id: Uuid,
+    pub kek_id: String,
     pub user_id: Uuid,
     pub algorithm: String,
     pub wrapped_dek_hex: String,

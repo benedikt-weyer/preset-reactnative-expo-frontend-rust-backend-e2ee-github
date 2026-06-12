@@ -45,6 +45,7 @@ where
 pub async fn insert_kek_metadata<C>(
     db: &C,
     user_id: Uuid,
+    kek_id: String,
     kek_epoch_version: i32,
     created_at: DateTimeWithTimeZone,
 ) -> AppResult<kek_metadata_entity::Model>
@@ -52,7 +53,7 @@ where
     C: ConnectionTrait,
 {
     kek_metadata_entity::ActiveModel {
-        kek_id: Set(Uuid::new_v4()),
+        kek_id: Set(kek_id),
         user_id: Set(user_id),
         kek_epoch_version: Set(kek_epoch_version),
         created_at: Set(created_at),

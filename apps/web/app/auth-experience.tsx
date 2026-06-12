@@ -5,13 +5,14 @@ import { ArrowRight, LockKeyhole, ShieldCheck, UserRound } from 'lucide-react';
 
 import {
   createPasswordSalt,
-  decryptStringWithDek,
+  decryptStringWithAsymmetricKek,
+  deriveKekKeyPair,
   deriveCredentials,
-  encryptStringWithDek,
+  encryptStringWithAsymmetricKek,
   normalizeEmail,
-  rewrapEncryptedDek,
+  rewrapAsymmetricEncryptedDek,
   type CryptKey,
-  type KekDekEncryptedPayload,
+  type KekAsymmetricDekEncryptedPayload,
 } from '@repo/e2ee-auth/web';
 
 import { Button } from '@/components/ui/button';
@@ -49,7 +50,7 @@ type NoteDocument = {
 type DecryptedNote = {
   createdAt: string;
   id: string;
-  payload: KekDekEncryptedPayload;
+  payload: KekAsymmetricDekEncryptedPayload;
   title: string;
   content: string;
   updatedAt: string;
@@ -63,7 +64,7 @@ type MigrationProgress = {
 const featureNotes = [
   'The typed password stays in the browser and derives two keys locally.',
   'The backend sees only the derived auth key plus the per-account salt.',
-  'Each note stores one encrypted document plus one wrapped per-resource DEK addressed by a UUID.',
+  'Each note stores one encrypted document plus one wrapped per-resource DEK addressed by the KEK public key.',
 ];
 
 export function AuthExperience() {
@@ -177,6 +178,8 @@ export function AuthExperience() {
       }
 
       const credentials = await deriveCredentials(normalizedEmail, password, saltHex);
+      const registerKekKeyPair =
+        mode === 'register' ? await deriveKekKeyPair(credentials.cryptKey) : null;
       const response =
         mode === 'login'
           ? await loginRequest({
@@ -188,6 +191,7 @@ export function AuthExperience() {
               authKey: credentials.authKey,
               baseUrl: trimmedBackendUrl,
               email: credentials.email,
+              kekId: registerKekKeyPair!.kekId,
               saltHex,
             });
       const responseKekMetadatas = sortKekMetadatas(response.kekMetadatas);
@@ -314,8 +318,10 @@ export function AuthExperience() {
       }
 
       const credentials = await deriveCredentials(session.user.email, nextPassword, saltHex);
+      const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
       const response = await rotatePasswordRequest({
         baseUrl: backendUrl,
+        kekId: kekKeyPair.kekId,
         newAuthKey: credentials.authKey,
         token: session.token,
       });
@@ -427,11 +433,10 @@ export function AuthExperience() {
           baseUrl: backendUrl,
           noteId: note.id,
           payload: {
-            encryptedDek: rewrapEncryptedDek(
+            encryptedDek: await rewrapAsymmetricEncryptedDek(
               note,
               noteLinkedKek.cryptKey,
               latestLinkedKek.cryptKey,
-              latestLinkedKek.kekId,
             ),
             encryptedPayload: note.encryptedPayload,
           },
@@ -491,7 +496,7 @@ export function AuthExperience() {
         token,
       });
       const decryptedNotes = sortNotes(
-        remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks)),
+        await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
       );
 
       setNotes(decryptedNotes);
@@ -543,13 +548,12 @@ export function AuthExperience() {
     setErrorMessage(null);
 
     try {
-      const encryptedPayload = encryptStringWithDek(
+      const encryptedPayload = await encryptStringWithAsymmetricKek(
         serializeNoteDocument({
           content: noteContent,
           title: noteTitle,
         }),
         activeLinkedKek.cryptKey,
-        activeLinkedKek.kekId,
       );
       const savedNote = selectedNoteId
         ? await updateNote({
@@ -564,7 +568,7 @@ export function AuthExperience() {
             token: session.token,
           });
 
-          const decryptedNote = decryptNoteRecord(savedNote, linkedKeks);
+      const decryptedNote = await decryptNoteRecord(savedNote, linkedKeks);
       const nextNotes = sortNotes([
         decryptedNote,
         ...notes.filter((note) => note.id !== decryptedNote.id),
@@ -1007,7 +1011,7 @@ function serializeNoteDocument(note: NoteDocument) {
   });
 }
 
-function decryptNoteRecord(note: NoteResponse, linkedKeks: PersistedLinkedKek[]): DecryptedNote {
+async function decryptNoteRecord(note: NoteResponse, linkedKeks: PersistedLinkedKek[]): Promise<DecryptedNote> {
   const linkedKek = findLinkedKek(linkedKeks, note.encryptedDek.kekId);
 
   if (!linkedKek) {
@@ -1017,7 +1021,7 @@ function decryptNoteRecord(note: NoteResponse, linkedKeks: PersistedLinkedKek[])
   }
 
   const decryptedDocument = deserializeNoteDocument(
-    decryptStringWithDek(note, linkedKek.cryptKey),
+    await decryptStringWithAsymmetricKek(note, linkedKek.cryptKey),
   );
 
   return {

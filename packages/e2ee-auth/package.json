@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@repo/oqs-kek": "workspace:*",
     "libsodium-wrappers-sumo": "0.8.4",
     "react-native-libsodium": "^1.7.0"
   },

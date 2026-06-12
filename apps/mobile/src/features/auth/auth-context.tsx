@@ -9,6 +9,7 @@ import {
 
 import {
   createPasswordSalt,
+  deriveKekKeyPair,
   deriveCredentials,
   normalizeEmail,
 } from '@repo/e2ee-auth/native';
@@ -142,6 +143,8 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     const saltHex = saltMaterial.saltHex;
     const credentials = await deriveCredentials(normalizedEmail, password, saltHex);
+    const registerKekKeyPair =
+      mode === 'register' ? await deriveKekKeyPair(credentials.cryptKey) : null;
     const response =
       mode === 'login'
         ? await loginRequest({
@@ -153,6 +156,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
             authKey: credentials.authKey,
             baseUrl: backendUrl,
             email: credentials.email,
+            kekId: registerKekKeyPair!.kekId,
             saltHex,
           });
     const responseKekMetadatas = sortKekMetadatas(response.kekMetadatas);
@@ -254,8 +258,10 @@ export function AuthProvider({ children }: AuthProviderProps) {
     }
 
     const credentials = await deriveCredentials(session.user.email, newPassword, saltHex);
+    const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
     const response = await rotatePasswordRequest({
       baseUrl: preferences.backendUrl,
+      kekId: kekKeyPair.kekId,
       newAuthKey: credentials.authKey,
       token: session.token,
     });
