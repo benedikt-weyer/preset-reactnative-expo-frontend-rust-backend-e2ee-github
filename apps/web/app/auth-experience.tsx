@@ -1,8 +1,15 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { ArrowRight, LockKeyhole, ShieldCheck, Trash2, UserRound } from 'lucide-react';
 import { subscribeToNoteEvents } from '@repo/realtime';
+import {
+  exportImportExportSuite,
+  importImportExportSuite,
+  inspectImportExportSuite,
+  type ImportExportSuiteInspection,
+  type ImportExportSuiteNote,
+} from '@repo/import-export-suite/web';
 
 import {
   createApiToken,
@@ -96,6 +103,11 @@ export function AuthExperience() {
   const [noteTitle, setNoteTitle] = useState('');
   const [noteContent, setNoteContent] = useState('');
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
+  const [exportPassword, setExportPassword] = useState('');
+  const [importPassword, setImportPassword] = useState('');
+  const [importFileName, setImportFileName] = useState('');
+  const [importInspection, setImportInspection] = useState<ImportExportSuiteInspection | null>(null);
+  const [importPayload, setImportPayload] = useState<string | null>(null);
   const [apiUserLabel, setApiUserLabel] = useState('');
   const [apiUsers, setApiUsers] = useState<ApiUserView[]>([]);
   const [latestApiToken, setLatestApiToken] = useState<string | null>(null);
@@ -116,9 +128,12 @@ export function AuthExperience() {
   const [deletingApiUserId, setDeletingApiUserId] = useState<string | null>(null);
   const [isDeletingAccount, setIsDeletingAccount] = useState(false);
   const [isMigrating, setIsMigrating] = useState(false);
+  const [isExportingNotes, setIsExportingNotes] = useState(false);
+  const [isImportingNotes, setIsImportingNotes] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const selectedNoteIdRef = useRef<string | null>(null);
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const applySelectedNote = useCallback((note: DecryptedNote | null) => {
     const nextSelectedNoteId = note?.id ?? null;
@@ -856,6 +871,181 @@ export function AuthExperience() {
     }
   }
 
+  async function handleExportNotes() {
+    if (notes.length === 0) {
+      setStatusMessage('Create or sync at least one note before exporting JSON.');
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsExportingNotes(true);
+
+    try {
+      const noteLabel = `note${notes.length === 1 ? '' : 's'}`;
+      const protectionLabel = exportPassword ? 'password-protected JSON' : 'cleartext JSON';
+      const serialized = await exportImportExportSuite(
+        notes.map((note) => toBackupNote(note)),
+        exportPassword
+          ? {
+              password: exportPassword,
+            }
+          : undefined,
+      );
+      const filename = buildImportExportSuiteFilename(new Date().toISOString());
+
+      downloadTextFile(filename, serialized, 'application/json');
+      setExportPassword('');
+      setStatusMessage(`Exported ${notes.length} ${noteLabel} as ${protectionLabel}.`);
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to export the notes as JSON.',
+      );
+    } finally {
+      setIsExportingNotes(false);
+    }
+  }
+
+  async function handleImportFileSelection(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    setErrorMessage(null);
+
+    try {
+      const serialized = await file.text();
+      const inspection = inspectImportExportSuite(serialized);
+
+      setImportPayload(serialized);
+      setImportFileName(file.name);
+      setImportInspection(inspection);
+      setStatusMessage(
+        inspection.encrypted
+          ? `Selected ${file.name}. This export is password protected.`
+          : `Selected ${file.name}. This export contains cleartext JSON.`,
+      );
+    } catch (error) {
+      setImportPayload(null);
+      setImportFileName('');
+      setImportInspection(null);
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to read the selected import file.',
+      );
+    } finally {
+      event.target.value = '';
+    }
+  }
+
+  async function handleImportNotes() {
+    if (!session) {
+      return;
+    }
+
+    if (!importPayload) {
+      setErrorMessage('Choose a JSON import file before importing notes.');
+      return;
+    }
+
+    setErrorMessage(null);
+    setIsImportingNotes(true);
+
+    try {
+      const importedNotes = await importImportExportSuite(
+        importPayload,
+        importPassword
+          ? {
+              password: importPassword,
+            }
+          : undefined,
+      );
+
+      if (importedNotes.length === 0) {
+        setStatusMessage('The selected import file does not contain any notes.');
+        return;
+      }
+
+      const trimmedBackendUrl = backendUrl.trim();
+      const currentLinkedPrincipals = await runWithSessionRetry(
+        session,
+        trimmedBackendUrl,
+        (activeSession) =>
+          fetchLinkedPrincipals({
+            baseUrl: trimmedBackendUrl,
+            token: activeSession.token,
+          }),
+      );
+      let createdCount = 0;
+      let updatedCount = 0;
+
+      for (const importedNote of importedNotes) {
+        const encryptedPayload = await encryptStringWithAsymmetricKeks(
+          serializeNoteDocument({
+            content: importedNote.content,
+            title: importedNote.title,
+          }),
+          currentLinkedPrincipals.map((principal) => principal.latestKekPublicKey),
+        );
+        const payload = {
+          encryptedDeks: encryptedPayload.encryptedDeks.map((encryptedDek, index) => {
+            const principal = currentLinkedPrincipals[index];
+
+            if (!principal) {
+              throw new Error('The backend returned an incomplete linked principal list.');
+            }
+
+            return {
+              ...encryptedDek,
+              userId: principal.id,
+            };
+          }),
+          encryptedPayload: encryptedPayload.encryptedPayload,
+        };
+        const existingNote = notes.find((note) => note.id === importedNote.id) ?? null;
+
+        await runWithSessionRetry(session, trimmedBackendUrl, (activeSession) =>
+          existingNote
+            ? updateNote({
+                baseUrl: trimmedBackendUrl,
+                noteId: existingNote.id,
+                payload,
+                token: activeSession.token,
+              })
+            : createNote({
+                baseUrl: trimmedBackendUrl,
+                payload,
+                token: activeSession.token,
+              }),
+        );
+
+        if (existingNote) {
+          updatedCount += 1;
+        } else {
+          createdCount += 1;
+        }
+      }
+
+      await loadNotes({
+        emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
+        linkedKeks,
+        nextSession: session,
+        trimmedBackendUrl,
+      });
+      setImportPayload(null);
+      setImportFileName('');
+      setImportInspection(null);
+      setImportPassword('');
+      setStatusMessage(buildImportSummary(createdCount, updatedCount));
+    } catch (error) {
+      setErrorMessage(
+        error instanceof Error ? error.message : 'Unable to import the JSON export.',
+      );
+    } finally {
+      setIsImportingNotes(false);
+    }
+  }
+
   async function handleCreateApiUser() {
     if (!session || session.currentPrincipal.kind !== 'user') {
       return;
@@ -1488,6 +1678,84 @@ export function AuthExperience() {
                     </Button>
                   </div>
                 </div>
+                <div className="grid gap-3 rounded-[1.4rem] border border-dashed border-border/70 bg-white/70 p-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <p className="text-xs font-semibold uppercase tracking-[0.24em] text-muted-foreground">
+                      Import / export suite
+                    </p>
+                    <span className="text-xs text-foreground/60">
+                      JSON with optional custom-password AES-256-GCM protection
+                    </span>
+                  </div>
+                  <p className="text-sm leading-6 text-foreground/75">
+                    Export the currently decrypted notes as JSON, or import a prior JSON export.
+                    The optional import/export password is separate from the account password and
+                    derives its own key with Argon2id.
+                  </p>
+                  <LabeledInput
+                    autoComplete="new-password"
+                    label="Optional export password"
+                    onChange={setExportPassword}
+                    placeholder="Leave empty for cleartext JSON"
+                    type="password"
+                    value={exportPassword}
+                  />
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <Button
+                      disabled={isExportingNotes || notes.length === 0}
+                      onClick={() => {
+                        void handleExportNotes();
+                      }}
+                      size="lg"
+                      variant="outline"
+                    >
+                      {isExportingNotes ? 'Exporting JSON...' : 'Export JSON'}
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        importFileInputRef.current?.click();
+                      }}
+                      size="lg"
+                      variant="outline"
+                    >
+                      Choose import file
+                    </Button>
+                  </div>
+                  <input
+                    accept="application/json,.json"
+                    className="hidden"
+                    onChange={handleImportFileSelection}
+                    ref={importFileInputRef}
+                    type="file"
+                  />
+                  <LabeledInput
+                    autoComplete="current-password"
+                    label="Import password"
+                    onChange={setImportPassword}
+                    placeholder={importInspection?.encrypted ? 'Enter the custom export password' : 'Only needed for encrypted exports'}
+                    type="password"
+                    value={importPassword}
+                  />
+                  <div className="rounded-[1.2rem] border border-border/60 bg-background/80 px-4 py-3 text-sm leading-6 text-foreground/75">
+                    {importInspection ? (
+                      <p>
+                        Selected {importFileName} with {importInspection.noteCount} note{importInspection.noteCount === 1 ? '' : 's'}.{' '}
+                        {importInspection.encrypted ? 'Password protection is enabled.' : 'This export is cleartext.'}
+                      </p>
+                    ) : (
+                      <p>No import file selected yet.</p>
+                    )}
+                  </div>
+                  <Button
+                    disabled={isImportingNotes || !importPayload}
+                    onClick={() => {
+                      void handleImportNotes();
+                    }}
+                    size="lg"
+                  >
+                    {isImportingNotes ? 'Importing JSON...' : 'Import selected JSON'}
+                  </Button>
+                </div>
               </div>
 
               <div className="grid gap-3 rounded-[1.6rem] border border-border/70 bg-muted/45 p-5 text-sm leading-6 text-foreground/75">
@@ -1717,6 +1985,49 @@ function sortKekMetadatas(kekMetadatas: KekMetadata[]) {
   return [...kekMetadatas].sort(
     (left, right) => right.kekEpochVersion - left.kekEpochVersion,
   );
+}
+
+function toBackupNote(note: DecryptedNote): ImportExportSuiteNote {
+  return {
+    content: note.content,
+    createdAt: note.createdAt,
+    id: note.id,
+    title: note.title,
+    updatedAt: note.updatedAt,
+  };
+}
+
+function buildImportExportSuiteFilename(exportedAt: string) {
+  const safeTimestamp = exportedAt.replace(/[.:]/g, '-');
+
+  return `import-export-suite-${safeTimestamp}.json`;
+}
+
+function downloadTextFile(filename: string, content: string, mimeType: string) {
+  const blob = new Blob([content], { type: mimeType });
+  const objectUrl = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+
+  anchor.href = objectUrl;
+  anchor.download = filename;
+  anchor.click();
+  URL.revokeObjectURL(objectUrl);
+}
+
+function buildImportSummary(createdCount: number, updatedCount: number) {
+  const segments = [];
+
+  if (updatedCount > 0) {
+    segments.push(`updated ${updatedCount}`);
+  }
+
+  if (createdCount > 0) {
+    segments.push(`created ${createdCount}`);
+  }
+
+  return segments.length > 0
+    ? `Imported notes: ${segments.join(' and ')}.`
+    : 'The import file did not produce any note changes.';
 }
 
 function mergeLinkedKeks(linkedKeks: PersistedLinkedKek[]) {

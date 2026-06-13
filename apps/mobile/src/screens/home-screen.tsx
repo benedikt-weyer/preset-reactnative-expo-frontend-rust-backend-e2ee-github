@@ -1,5 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
+import * as DocumentPicker from 'expo-document-picker';
+import { File, Paths } from 'expo-file-system';
+import * as Sharing from 'expo-sharing';
+import {
+  exportImportExportSuite,
+  importImportExportSuite,
+  inspectImportExportSuite,
+  type ImportExportSuiteInspection,
+  type ImportExportSuiteNote,
+} from '@repo/import-export-suite/native';
 import { subscribeToNoteEvents } from '@repo/realtime';
 
 import {
@@ -58,11 +68,18 @@ export function HomeScreen() {
   const [noteTitle, setNoteTitle] = useState('');
   const [noteContent, setNoteContent] = useState('');
   const [notes, setNotes] = useState<DecryptedNote[]>([]);
+  const [exportPassword, setExportPassword] = useState('');
+  const [importPassword, setImportPassword] = useState('');
+  const [importFileName, setImportFileName] = useState('');
+  const [importInspection, setImportInspection] = useState<ImportExportSuiteInspection | null>(null);
+  const [importPayload, setImportPayload] = useState<string | null>(null);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const selectedNoteIdRef = useRef<string | null>(null);
   const isMountedRef = useRef(true);
   const [migrationProgress, setMigrationProgress] = useState<MigrationProgress | null>(null);
   const [isMigrating, setIsMigrating] = useState(false);
+  const [isExportingNotes, setIsExportingNotes] = useState(false);
+  const [isImportingNotes, setIsImportingNotes] = useState(false);
   const [isRotatingPassword, setIsRotatingPassword] = useState(false);
   const [statusMessage, setStatusMessage] = useState('');
 
@@ -275,6 +292,170 @@ export function HomeScreen() {
       setStatusMessage(
         error instanceof Error ? error.message : 'Unable to delete the encrypted note.',
       );
+    }
+  }
+
+  async function handleExportNotes() {
+    if (notes.length === 0) {
+      setStatusMessage('Create or sync at least one note before exporting JSON.');
+      return;
+    }
+
+    setIsExportingNotes(true);
+
+    try {
+      const noteLabel = `note${notes.length === 1 ? '' : 's'}`;
+      const protectionLabel = exportPassword ? 'password-protected JSON' : 'cleartext JSON';
+      const sharingAvailable = await Sharing.isAvailableAsync();
+
+      if (!sharingAvailable) {
+        throw new Error('File sharing is unavailable on this device.');
+      }
+
+      const serialized = await exportImportExportSuite(
+        notes.map((note) => toBackupNote(note)),
+        exportPassword
+          ? {
+              password: exportPassword,
+            }
+          : undefined,
+      );
+      const filename = buildImportExportSuiteFilename(new Date().toISOString());
+      const file = new File(Paths.cache, filename);
+
+      file.create({ overwrite: true });
+      file.write(serialized);
+      await Sharing.shareAsync(file.uri, {
+        dialogTitle: 'Share exported notes JSON',
+        mimeType: 'application/json',
+        UTI: 'public.json',
+      });
+      setExportPassword('');
+      setStatusMessage(`Exported ${notes.length} ${noteLabel} as ${protectionLabel}.`);
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to export the notes as JSON.',
+      );
+    } finally {
+      setIsExportingNotes(false);
+    }
+  }
+
+  async function handlePickImportFile() {
+    try {
+      const result = await DocumentPicker.getDocumentAsync({
+        copyToCacheDirectory: true,
+        multiple: false,
+        type: ['application/json', 'text/json'],
+      });
+
+      if (result.canceled) {
+        return;
+      }
+
+      const asset = result.assets[0];
+
+      if (!asset) {
+        throw new Error('The selected import file is missing.');
+      }
+
+      const file = new File(asset.uri);
+      const serialized = await file.text();
+      const inspection = inspectImportExportSuite(serialized);
+
+      setImportPayload(serialized);
+      setImportFileName(asset.name);
+      setImportInspection(inspection);
+      setStatusMessage(
+        inspection.encrypted
+          ? `Selected ${asset.name}. This export is password protected.`
+          : `Selected ${asset.name}. This export contains cleartext JSON.`,
+      );
+    } catch (error) {
+      setImportPayload(null);
+      setImportFileName('');
+      setImportInspection(null);
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to read the selected import file.',
+      );
+    }
+  }
+
+  async function handleImportNotes() {
+    if (!session) {
+      return;
+    }
+
+    if (!importPayload) {
+      setStatusMessage('Choose a JSON import file before importing notes.');
+      return;
+    }
+
+    setIsImportingNotes(true);
+
+    try {
+      const importedNotes = await importImportExportSuite(
+        importPayload,
+        importPassword
+          ? {
+              password: importPassword,
+            }
+          : undefined,
+      );
+
+      if (importedNotes.length === 0) {
+        setStatusMessage('The selected import file does not contain any notes.');
+        return;
+      }
+
+      const activeLinkedKek = requireLinkedKek(linkedKeks, activeKekId);
+      let createdCount = 0;
+      let updatedCount = 0;
+
+      for (const importedNote of importedNotes) {
+        const encryptedPayload = await encryptStringWithAsymmetricKek(
+          serializeNoteDocument({
+            content: importedNote.content,
+            title: importedNote.title,
+          }),
+          activeLinkedKek.kekPublicKey,
+        );
+        const existingNote = notes.find((note) => note.id === importedNote.id) ?? null;
+
+        await runWithFreshSession((activeSession) =>
+          existingNote
+            ? updateNote({
+                baseUrl: backendUrl,
+                noteId: existingNote.id,
+                payload: encryptedPayload,
+                token: activeSession.token,
+              })
+            : createNote({
+                baseUrl: backendUrl,
+                payload: encryptedPayload,
+                token: activeSession.token,
+              }),
+        );
+
+        if (existingNote) {
+          updatedCount += 1;
+        } else {
+          createdCount += 1;
+        }
+      }
+
+      await loadNotes();
+      setImportPayload(null);
+      setImportFileName('');
+      setImportInspection(null);
+      setImportPassword('');
+      setStatusMessage(buildImportSummary(createdCount, updatedCount));
+    } catch (error) {
+      setStatusMessage(
+        error instanceof Error ? error.message : 'Unable to import the JSON export.',
+      );
+    } finally {
+      setIsImportingNotes(false);
     }
   }
 
@@ -575,6 +756,71 @@ export function HomeScreen() {
             </Text>
           </Pressable>
         </View>
+        <View className={`gap-3 rounded-[22px] border border-dashed px-4 py-4 ${tokens.card}`}>
+          <Text className={`text-sm uppercase tracking-[2px] ${tokens.kicker}`}>
+            Import / export suite
+          </Text>
+          <Text className={`text-base leading-7 ${tokens.body}`}>
+            Export the decrypted notes as JSON, or import a prior JSON export. The optional
+            import/export password is separate from the account password and derives its own
+            AES-256-GCM key with Argon2id.
+          </Text>
+          <TextInput
+            autoCapitalize="none"
+            className={`rounded-[22px] border px-4 py-3 text-base ${tokens.card} ${tokens.title}`}
+            onChangeText={setExportPassword}
+            placeholder="Optional export password"
+            placeholderTextColor={themeMode === 'dark' ? '#94a3b8' : '#78716c'}
+            secureTextEntry
+            value={exportPassword}
+          />
+          <Pressable
+            className="items-center rounded-full border border-stone-300 px-4 py-4 dark:border-slate-700"
+            disabled={isExportingNotes || notes.length === 0}
+            onPress={() => {
+              void handleExportNotes();
+            }}
+          >
+            <Text className={`text-sm font-semibold uppercase tracking-[1.5px] ${tokens.title}`}>
+              {isExportingNotes ? 'Exporting JSON...' : 'Export JSON'}
+            </Text>
+          </Pressable>
+          <Pressable
+            className="items-center rounded-full border border-stone-300 px-4 py-4 dark:border-slate-700"
+            onPress={() => {
+              void handlePickImportFile();
+            }}
+          >
+            <Text className={`text-sm font-semibold uppercase tracking-[1.5px] ${tokens.title}`}>
+              Choose import file
+            </Text>
+          </Pressable>
+          <TextInput
+            autoCapitalize="none"
+            className={`rounded-[22px] border px-4 py-3 text-base ${tokens.card} ${tokens.title}`}
+            onChangeText={setImportPassword}
+            placeholder={importInspection?.encrypted ? 'Enter the custom export password' : 'Import password only for encrypted exports'}
+            placeholderTextColor={themeMode === 'dark' ? '#94a3b8' : '#78716c'}
+            secureTextEntry
+            value={importPassword}
+          />
+          <Text className={`text-sm leading-6 ${tokens.body}`}>
+            {importInspection
+              ? describeSelectedImport(importFileName, importInspection)
+              : 'No import file selected yet.'}
+          </Text>
+          <Pressable
+            className={`items-center rounded-full px-4 py-4 ${tokens.segmentActive}`}
+            disabled={isImportingNotes || !importPayload}
+            onPress={() => {
+              void handleImportNotes();
+            }}
+          >
+            <Text className={`text-sm font-semibold uppercase tracking-[1.5px] ${tokens.segmentActiveText}`}>
+              {isImportingNotes ? 'Importing JSON...' : 'Import selected JSON'}
+            </Text>
+          </Pressable>
+        </View>
         <Text className={`text-base leading-7 ${tokens.body}`}>
           {statusMessage || 'Nothing encrypted yet. Create a note to exercise the synced E2EE flow.'}
         </Text>
@@ -638,6 +884,47 @@ function deserializeNoteDocument(value: string): NoteDocument {
     content: value,
     title: '',
   };
+}
+
+function toBackupNote(note: DecryptedNote): ImportExportSuiteNote {
+  return {
+    content: note.content,
+    createdAt: note.createdAt,
+    id: note.id,
+    title: note.title,
+    updatedAt: note.updatedAt,
+  };
+}
+
+function buildImportExportSuiteFilename(exportedAt: string) {
+  const safeTimestamp = exportedAt.replace(/[.:]/g, '-');
+
+  return `import-export-suite-${safeTimestamp}.json`;
+}
+
+function buildImportSummary(createdCount: number, updatedCount: number) {
+  const segments = [];
+
+  if (updatedCount > 0) {
+    segments.push(`updated ${updatedCount}`);
+  }
+
+  if (createdCount > 0) {
+    segments.push(`created ${createdCount}`);
+  }
+
+  return segments.length > 0
+    ? `Imported notes: ${segments.join(' and ')}.`
+    : 'The import file did not produce any note changes.';
+}
+
+function describeSelectedImport(fileName: string, inspection: ImportExportSuiteInspection) {
+  const noteLabel = `note${inspection.noteCount === 1 ? '' : 's'}`;
+  const protectionLabel = inspection.encrypted
+    ? 'Password protection is enabled.'
+    : 'This export is cleartext.';
+
+  return `Selected ${fileName} with ${inspection.noteCount} ${noteLabel}. ${protectionLabel}`;
 }
 
 function sortNotes(notes: DecryptedNote[]) {
