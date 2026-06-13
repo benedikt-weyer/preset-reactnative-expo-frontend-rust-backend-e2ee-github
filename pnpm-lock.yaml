@@ -200,6 +200,9 @@ importers:
       '@repo/e2ee-auth':
         specifier: workspace:*
         version: link:../e2ee-auth
+      '@repo/import-export-suite':
+        specifier: workspace:*
+        version: link:../import-export-suite
       '@types/node':
         specifier: ^24.10.0
         version: 24.13.2
@@ -7139,9 +7142,7 @@ snapshots:
       metro-runtime: 0.84.4
     transitivePeerDependencies:
       - '@babel/core'
-      - bufferutil
       - supports-color
-      - utf-8-validate
 
   '@react-native/normalize-colors@0.85.3': {}
 

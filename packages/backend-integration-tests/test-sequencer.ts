@@ -6,6 +6,7 @@ const ORDERED_FILES = [
   '01-register-login-note.test.ts',
   '02-password-rotation.test.ts',
   '03-api-user.test.ts',
+  '04-import-export-suite.test.ts',
 ];
 
 const FILE_RANK = new Map(ORDERED_FILES.map((fileName, index) => [fileName, index]));

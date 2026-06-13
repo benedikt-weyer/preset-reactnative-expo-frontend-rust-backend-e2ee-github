@@ -9,6 +9,7 @@
   },
   "devDependencies": {
     "@repo/e2ee-auth": "workspace:*",
+    "@repo/import-export-suite": "workspace:*",
     "@types/node": "^24.10.0",
     "@types/pg": "^8.15.6",
     "pg": "^8.16.3",

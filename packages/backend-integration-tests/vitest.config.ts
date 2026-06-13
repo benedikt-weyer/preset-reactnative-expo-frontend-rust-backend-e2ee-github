@@ -9,6 +9,7 @@ export default defineConfig({
       'src/01-register-login-note.test.ts',
       'src/02-password-rotation.test.ts',
       'src/03-api-user.test.ts',
+      'src/04-import-export-suite.test.ts',
     ],
     hookTimeout: 300_000,
     sequence: {
