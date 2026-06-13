@@ -28,6 +28,7 @@ import {
   fetchLinkedPrincipals,
   fetchPasswordSalt,
   loginRequest,
+  refreshSessionRequest,
   rotatePasswordRequest,
   registerRequest,
   provisionApiUserDeksRequest,
@@ -128,23 +129,100 @@ export function AuthExperience() {
     setNoteContent(note?.content ?? '');
   }, []);
 
+  const persistAuthSession = useCallback((nextSession: AuthApiResponse) => {
+    setSession(nextSession);
+    localStorageAuthPersistence.writeAuthSession(nextSession);
+  }, []);
+
+  const clearSessionState = useCallback((options?: {
+    clearDerivedCredentials?: boolean;
+    statusMessage?: string;
+  }) => {
+    setSession(null);
+    setApiUserLabel('');
+    setApiUsers([]);
+    setLatestApiToken(null);
+    setPassword('');
+    setNextPassword('');
+    setOlderPasswords({});
+    setMigrationPasswords({});
+    setRequiredOlderKeks([]);
+    setKekMigrationStatus(null);
+    setMigrationProgress(null);
+    setApiUserProgress(null);
+    setNotes([]);
+    applySelectedNote(null);
+    localStorageAuthPersistence.clearAuthSession();
+
+    if (options?.clearDerivedCredentials) {
+      setLinkedKeks([]);
+      localStorageAuthPersistence.clearDerivedCredentials();
+    }
+
+    if (options?.statusMessage) {
+      setStatusMessage(options.statusMessage);
+    }
+  }, [applySelectedNote]);
+
+  const refreshSession = useCallback(async (
+    currentSession: AuthApiResponse,
+    trimmedBackendUrl: string,
+  ) => {
+    const nextSession = await refreshSessionRequest({
+      baseUrl: trimmedBackendUrl,
+      refreshToken: currentSession.refreshToken,
+    });
+
+    persistAuthSession(nextSession);
+    return nextSession;
+  }, [persistAuthSession]);
+
+  const runWithSessionRetry = useCallback(async <T,>(
+    currentSession: AuthApiResponse,
+    trimmedBackendUrl: string,
+    callback: (activeSession: AuthApiResponse) => Promise<T>,
+  ) => {
+    try {
+      return await callback(currentSession);
+    } catch (error) {
+      if (!hasUnauthorizedStatus(error)) {
+        throw error;
+      }
+
+      try {
+        const refreshedSession = await refreshSession(currentSession, trimmedBackendUrl);
+        return await callback(refreshedSession);
+      } catch (refreshError) {
+        if (hasUnauthorizedStatus(refreshError)) {
+          clearSessionState({
+            statusMessage: 'Session expired. Log in again.',
+          });
+          throw new Error('Session expired. Log in again.');
+        }
+
+        throw refreshError;
+      }
+    }
+  }, [clearSessionState, refreshSession]);
+
   const loadNotes = useCallback(
     async ({
       emptyMessage,
       linkedKeks,
-      token,
+      nextSession,
       trimmedBackendUrl,
     }: {
       emptyMessage: string;
       linkedKeks: PersistedLinkedKek[];
-      token: string;
+      nextSession: AuthApiResponse;
       trimmedBackendUrl: string;
     }) => {
       try {
-        const remoteNotes = await fetchNotes({
-          baseUrl: trimmedBackendUrl,
-          token,
-        });
+        const remoteNotes = await runWithSessionRetry(nextSession, trimmedBackendUrl, (activeSession) =>
+          fetchNotes({
+            baseUrl: trimmedBackendUrl,
+            token: activeSession.token,
+          }));
         const decryptedNotes = sortNotes(
           await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
         );
@@ -171,24 +249,25 @@ export function AuthExperience() {
         );
       }
     },
-    [applySelectedNote],
+    [applySelectedNote, runWithSessionRetry],
   );
 
   const loadApiUsers = useCallback(
     async ({
       linkedKeks,
-      token,
+      nextSession,
       trimmedBackendUrl,
     }: {
       linkedKeks: PersistedLinkedKek[];
-      token: string;
+      nextSession: AuthApiResponse;
       trimmedBackendUrl: string;
     }) => {
       try {
-        const remoteApiUsers = await fetchApiUsers({
-          baseUrl: trimmedBackendUrl,
-          token,
-        });
+        const remoteApiUsers = await runWithSessionRetry(nextSession, trimmedBackendUrl, (activeSession) =>
+          fetchApiUsers({
+            baseUrl: trimmedBackendUrl,
+            token: activeSession.token,
+          }));
         const decryptedApiUsers = await Promise.all(
           remoteApiUsers.map((apiUser) => decryptApiUserRecord(apiUser, linkedKeks)),
         );
@@ -198,21 +277,22 @@ export function AuthExperience() {
         setApiUsers([]);
       }
     },
-    [],
+    [runWithSessionRetry],
   );
 
   const refreshKekMigrationStatus = useCallback(
     async (nextSession: AuthApiResponse, trimmedBackendUrl: string) => {
-      const nextStatus = await fetchKekMigrationStatus({
-        baseUrl: trimmedBackendUrl,
-        token: nextSession.token,
-      });
+      const nextStatus = await runWithSessionRetry(nextSession, trimmedBackendUrl, (activeSession) =>
+        fetchKekMigrationStatus({
+          baseUrl: trimmedBackendUrl,
+          token: activeSession.token,
+        }));
 
       setKekMigrationStatus(nextStatus);
 
       return nextStatus;
     },
-    [],
+    [runWithSessionRetry],
   );
 
   useEffect(() => {
@@ -247,14 +327,14 @@ export function AuthExperience() {
       void loadNotes({
         emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
         linkedKeks,
-        token: session.token,
+        nextSession: session,
         trimmedBackendUrl,
       });
 
       if (session.currentPrincipal.kind === 'user') {
         void loadApiUsers({
           linkedKeks,
-          token: session.token,
+          nextSession: session,
           trimmedBackendUrl,
         });
       }
@@ -279,20 +359,22 @@ export function AuthExperience() {
         accessToken: session.token,
         baseUrl: trimmedBackendUrl,
         onError: (error) => {
-          setStatusMessage(error.message);
+          void refreshSession(session, trimmedBackendUrl).catch(() => {
+            setStatusMessage(error.message);
+          });
         },
         onEvent: () => {
           void loadNotes({
             emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
             linkedKeks,
-            token: session.token,
+            nextSession: session,
             trimmedBackendUrl,
           });
 
           if (session.currentPrincipal.kind === 'user') {
             void loadApiUsers({
               linkedKeks,
-              token: session.token,
+              nextSession: session,
               trimmedBackendUrl,
             });
           }
@@ -309,7 +391,7 @@ export function AuthExperience() {
         error instanceof Error ? error.message : 'Unable to connect note realtime updates.',
       );
     }
-  }, [backendUrl, isHydrated, linkedKeks, loadApiUsers, loadNotes, refreshKekMigrationStatus, session]);
+  }, [backendUrl, isHydrated, linkedKeks, loadApiUsers, loadNotes, refreshKekMigrationStatus, refreshSession, session]);
 
   const missingMigrationKeks = session
     ? session.kekMetadatas.filter((metadata) => !findLinkedKek(linkedKeks, metadata.kekPublicKey))
@@ -419,7 +501,7 @@ export function AuthExperience() {
         ...nextDerivedLinkedKeks,
       ]);
 
-      setSession(response);
+      persistAuthSession(response);
       setLinkedKeks(nextLinkedKeks);
       setEmail(credentials.email);
       setPassword('');
@@ -433,7 +515,6 @@ export function AuthExperience() {
         backendUrl: trimmedBackendUrl,
         lastEmail: credentials.email,
       });
-      localStorageAuthPersistence.writeAuthSession(response);
       localStorageAuthPersistence.writeDerivedCredentials({
         email: credentials.email,
         linkedKeks: nextLinkedKeks,
@@ -445,7 +526,7 @@ export function AuthExperience() {
             ? 'Account created. Create a note to push ciphertext to the backend.'
             : 'Logged in. Create a note to push ciphertext to the backend.',
         linkedKeks: nextLinkedKeks,
-        token: response.token,
+        nextSession: response,
         trimmedBackendUrl,
       });
     } catch (error) {
@@ -458,40 +539,14 @@ export function AuthExperience() {
   }
 
   function handleSignOut() {
-    setSession(null);
-    setApiUserLabel('');
-    setApiUsers([]);
-    setLatestApiToken(null);
-    setPassword('');
-    setNextPassword('');
-    setOlderPasswords({});
-    setMigrationPasswords({});
-    setNotes([]);
-    applySelectedNote(null);
-    localStorageAuthPersistence.clearAuthSession();
-    setStatusMessage(
+    clearSessionState({
+      statusMessage:
       'Signed out. Synced notes remain on the backend, and the linked KEKs stay stored for the next login.',
-    );
+    });
   }
 
   function clearDeletedAccountState() {
-    setSession(null);
-    setApiUserLabel('');
-    setApiUsers([]);
-    setLatestApiToken(null);
-    setPassword('');
-    setNextPassword('');
-    setOlderPasswords({});
-    setMigrationPasswords({});
-    setLinkedKeks([]);
-    setRequiredOlderKeks([]);
-    setKekMigrationStatus(null);
-    setMigrationProgress(null);
-    setApiUserProgress(null);
-    setNotes([]);
-    applySelectedNote(null);
-    localStorageAuthPersistence.clearAuthSession();
-    localStorageAuthPersistence.clearDerivedCredentials();
+    clearSessionState({ clearDerivedCredentials: true });
   }
 
   async function handleRotatePassword() {
@@ -503,6 +558,7 @@ export function AuthExperience() {
     setIsRotatingPassword(true);
 
     try {
+      const trimmedBackendUrl = backendUrl.trim();
       const saltHex = linkedKeks[0]?.saltHex;
 
       if (!saltHex) {
@@ -511,12 +567,13 @@ export function AuthExperience() {
 
       const credentials = await deriveCredentials(session.user.email, nextPassword, saltHex);
       const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
-      const response = await rotatePasswordRequest({
-        baseUrl: backendUrl,
-        kekPublicKey: kekKeyPair.kekPublicKey,
-        newAuthKey: credentials.authKey,
-        token: session.token,
-      });
+      const response = await runWithSessionRetry(session, trimmedBackendUrl, (activeSession) =>
+        rotatePasswordRequest({
+          baseUrl: trimmedBackendUrl,
+          kekPublicKey: kekKeyPair.kekPublicKey,
+          newAuthKey: credentials.authKey,
+          token: activeSession.token,
+        }));
       const latestKekMetadata = sortKekMetadatas(response.kekMetadatas)[0];
 
       if (!latestKekMetadata) {
@@ -533,10 +590,9 @@ export function AuthExperience() {
         },
       ]);
 
-      setSession(response);
+      persistAuthSession(response);
       setLinkedKeks(nextLinkedKeks);
       setNextPassword('');
-      localStorageAuthPersistence.writeAuthSession(response);
       localStorageAuthPersistence.writeDerivedCredentials({
         email: session.user.email,
         linkedKeks: nextLinkedKeks,
@@ -595,14 +651,17 @@ export function AuthExperience() {
       passwordsByKekId: migrationPasswords,
     });
     const latestLinkedKek = requireLinkedKek(workingLinkedKeks, latestKekMetadata.kekPublicKey);
-    const currentLinkedPrincipals = await fetchLinkedPrincipals({
-      baseUrl: backendUrl,
-      token: nextSession.token,
-    });
-    const remoteNotes = await fetchNotes({
-      baseUrl: backendUrl,
-      token: nextSession.token,
-    });
+    const trimmedBackendUrl = backendUrl.trim();
+    const currentLinkedPrincipals = await runWithSessionRetry(nextSession, trimmedBackendUrl, (activeSession) =>
+      fetchLinkedPrincipals({
+        baseUrl: trimmedBackendUrl,
+        token: activeSession.token,
+      }));
+    const remoteNotes = await runWithSessionRetry(nextSession, trimmedBackendUrl, (activeSession) =>
+      fetchNotes({
+        baseUrl: trimmedBackendUrl,
+        token: activeSession.token,
+      }));
     const notesToRewrap = remoteNotes.filter(
       (note) => note.encryptedDek.kekPublicKey !== latestLinkedKek.kekPublicKey,
     );
@@ -624,24 +683,25 @@ export function AuthExperience() {
           );
         }
 
-        await updateNote({
-          baseUrl: backendUrl,
-          noteId: note.id,
-          payload: {
-            encryptedDeks: await Promise.all(
-              currentLinkedPrincipals.map(async (principal) => ({
-                ...(await rewrapAsymmetricEncryptedDek(
-                  note,
-                  noteLinkedKek.cryptKey,
-                  principal.latestKekPublicKey,
-                )),
-                userId: principal.id,
-              })),
-            ),
-            encryptedPayload: note.encryptedPayload,
-          },
-          token: nextSession.token,
-        });
+        await runWithSessionRetry(nextSession, trimmedBackendUrl, async (activeSession) =>
+          updateNote({
+            baseUrl: trimmedBackendUrl,
+            noteId: note.id,
+            payload: {
+              encryptedDeks: await Promise.all(
+                currentLinkedPrincipals.map(async (principal) => ({
+                  ...(await rewrapAsymmetricEncryptedDek(
+                    note,
+                    noteLinkedKek.cryptKey,
+                    principal.latestKekPublicKey,
+                  )),
+                  userId: principal.id,
+                })),
+              ),
+              encryptedPayload: note.encryptedPayload,
+            },
+            token: activeSession.token,
+          }));
 
         setMigrationProgress({
           completed: index + 1,
@@ -656,7 +716,7 @@ export function AuthExperience() {
         linkedKeks: workingLinkedKeks,
       });
 
-      const finalStatus = await refreshKekMigrationStatus(nextSession, backendUrl.trim());
+      const finalStatus = await refreshKekMigrationStatus(nextSession, trimmedBackendUrl);
 
       if (!finalStatus.allDeksUseLatestKek) {
         throw new Error('The backend still reports DEKs on older KEK epochs after migration.');
@@ -665,13 +725,13 @@ export function AuthExperience() {
       await loadNotes({
         emptyMessage: 'No synced notes yet. Create one to push ciphertext to the backend.',
         linkedKeks: workingLinkedKeks,
-        token: nextSession.token,
-        trimmedBackendUrl: backendUrl.trim(),
+        nextSession,
+        trimmedBackendUrl,
       });
       await loadApiUsers({
         linkedKeks: workingLinkedKeks,
-        token: nextSession.token,
-        trimmedBackendUrl: backendUrl.trim(),
+        nextSession,
+        trimmedBackendUrl,
       });
       setStatusMessage(
         notesToRewrap.length === 0
@@ -705,10 +765,12 @@ export function AuthExperience() {
     setErrorMessage(null);
 
     try {
-      const currentLinkedPrincipals = await fetchLinkedPrincipals({
-        baseUrl: backendUrl,
-        token: session.token,
-      });
+      const trimmedBackendUrl = backendUrl.trim();
+      const currentLinkedPrincipals = await runWithSessionRetry(session, trimmedBackendUrl, (activeSession) =>
+        fetchLinkedPrincipals({
+          baseUrl: trimmedBackendUrl,
+          token: activeSession.token,
+        }));
       const encryptedPayload = await encryptStringWithAsymmetricKeks(
         serializeNoteDocument({
           content: noteContent,
@@ -731,18 +793,19 @@ export function AuthExperience() {
         }),
         encryptedPayload: encryptedPayload.encryptedPayload,
       };
-      const savedNote = selectedNoteId
-        ? await updateNote({
-            baseUrl: backendUrl,
-            noteId: selectedNoteId,
-            payload,
-            token: session.token,
-          })
-        : await createNote({
-            baseUrl: backendUrl,
-            payload,
-            token: session.token,
-          });
+      const savedNote = await runWithSessionRetry(session, trimmedBackendUrl, (activeSession) =>
+        selectedNoteId
+          ? updateNote({
+              baseUrl: trimmedBackendUrl,
+              noteId: selectedNoteId,
+              payload,
+              token: activeSession.token,
+            })
+          : createNote({
+              baseUrl: trimmedBackendUrl,
+              payload,
+              token: activeSession.token,
+            }));
 
       const decryptedNote = await decryptNoteRecord(savedNote, linkedKeks);
       const nextNotes = sortNotes([
@@ -774,11 +837,12 @@ export function AuthExperience() {
     setErrorMessage(null);
 
     try {
-      await deleteNote({
-        baseUrl: backendUrl,
-        noteId: selectedNoteId,
-        token: session.token,
-      });
+      await runWithSessionRetry(session, backendUrl.trim(), (activeSession) =>
+        deleteNote({
+          baseUrl: backendUrl.trim(),
+          noteId: selectedNoteId,
+          token: activeSession.token,
+        }));
       const deletedNote = notes.find((note) => note.id === selectedNoteId) ?? null;
       const remainingNotes = notes.filter((note) => note.id !== selectedNoteId);
 
@@ -801,10 +865,12 @@ export function AuthExperience() {
     setIsCreatingApiUser(true);
 
     try {
-      const currentLinkedPrincipals = await fetchLinkedPrincipals({
-        baseUrl: backendUrl,
-        token: session.token,
-      });
+      const trimmedBackendUrl = backendUrl.trim();
+      const currentLinkedPrincipals = await runWithSessionRetry(session, trimmedBackendUrl, (activeSession) =>
+        fetchLinkedPrincipals({
+          baseUrl: trimmedBackendUrl,
+          token: activeSession.token,
+        }));
       const ownerPrincipal = currentLinkedPrincipals.find((principal) => principal.id === session.user.id);
 
       if (!ownerPrincipal) {
@@ -818,18 +884,19 @@ export function AuthExperience() {
         ownerPrincipal.latestKekPublicKey,
         apiTokenCredentials.kekKeyPair.kekPublicKey,
       ]);
-      const createdApiUser = await createApiUserRequest({
-        authKey: apiTokenCredentials.authKey,
-        baseUrl: backendUrl,
-        encryptedLabel: encryptedLabel.encryptedPayload,
-        encryptedLabelDeks: encryptedLabel.encryptedDeks.map((encryptedDek, index) => ({
-          ...encryptedDek,
-          userId: index === 0 ? ownerPrincipal.id : apiUserId,
-        })),
-        id: apiUserId,
-        kekPublicKey: apiTokenCredentials.kekKeyPair.kekPublicKey,
-        token: session.token,
-      });
+      const createdApiUser = await runWithSessionRetry(session, trimmedBackendUrl, (activeSession) =>
+        createApiUserRequest({
+          authKey: apiTokenCredentials.authKey,
+          baseUrl: trimmedBackendUrl,
+          encryptedLabel: encryptedLabel.encryptedPayload,
+          encryptedLabelDeks: encryptedLabel.encryptedDeks.map((encryptedDek, index) => ({
+            ...encryptedDek,
+            userId: index === 0 ? ownerPrincipal.id : apiUserId,
+          })),
+          id: apiUserId,
+          kekPublicKey: apiTokenCredentials.kekKeyPair.kekPublicKey,
+          token: activeSession.token,
+        }));
 
       setLatestApiToken(apiToken);
       setApiUserLabel('');
@@ -854,11 +921,12 @@ export function AuthExperience() {
     setErrorMessage(null);
 
     try {
-      const apiUser = await fetchApiUser({
-        apiUserId,
-        baseUrl: backendUrl,
-        token: session.token,
-      });
+      const apiUser = await runWithSessionRetry(session, backendUrl.trim(), (activeSession) =>
+        fetchApiUser({
+          apiUserId,
+          baseUrl: backendUrl.trim(),
+          token: activeSession.token,
+        }));
 
       await continueApiUserProvisioning(apiUser, {
         linkedKeks,
@@ -888,11 +956,12 @@ export function AuthExperience() {
     setDeletingApiUserId(apiUser.id);
 
     try {
-      await deleteApiUserRequest({
-        apiUserId: apiUser.id,
-        baseUrl: backendUrl,
-        token: session.token,
-      });
+      await runWithSessionRetry(session, backendUrl.trim(), (activeSession) =>
+        deleteApiUserRequest({
+          apiUserId: apiUser.id,
+          baseUrl: backendUrl.trim(),
+          token: activeSession.token,
+        }));
 
       setApiUsers((currentApiUsers) => currentApiUsers.filter((entry) => entry.id !== apiUser.id));
       setStatusMessage(`Removed api user ${apiUser.username} and its linked key material.`);
@@ -922,10 +991,11 @@ export function AuthExperience() {
     setIsDeletingAccount(true);
 
     try {
-      await deleteAccountRequest({
-        baseUrl: backendUrl,
-        token: session.token,
-      });
+      await runWithSessionRetry(session, backendUrl.trim(), (activeSession) =>
+        deleteAccountRequest({
+          baseUrl: backendUrl.trim(),
+          token: activeSession.token,
+        }));
 
       clearDeletedAccountState();
       setStatusMessage('Deleted the account and cleared the local linked key material.');
@@ -948,10 +1018,12 @@ export function AuthExperience() {
       nextSession: AuthApiResponse;
     },
   ) {
-    const remoteNotes = await fetchNotes({
-      baseUrl: backendUrl,
-      token: nextSession.token,
-    });
+    const trimmedBackendUrl = backendUrl.trim();
+    const remoteNotes = await runWithSessionRetry(nextSession, trimmedBackendUrl, (activeSession) =>
+      fetchNotes({
+        baseUrl: trimmedBackendUrl,
+        token: activeSession.token,
+      }));
     const notesById = new Map(remoteNotes.map((note) => [note.id, note]));
 
     setApiUserProgress({
@@ -980,24 +1052,25 @@ export function AuthExperience() {
           );
         }
 
-        latestApiUser = await provisionApiUserDeksRequest({
-          apiUserId: apiUser.id,
-          baseUrl: backendUrl,
-          token: nextSession.token,
-          wrappedDeks: [
-            {
-              resourceId: note.id,
-              wrappedDek: {
-                ...(await rewrapAsymmetricEncryptedDek(
-                  note,
-                  noteLinkedKek.cryptKey,
-                  latestApiUser.latestKekPublicKey,
-                )),
-                userId: latestApiUser.id,
+        latestApiUser = await runWithSessionRetry(nextSession, trimmedBackendUrl, async (activeSession) =>
+          provisionApiUserDeksRequest({
+            apiUserId: apiUser.id,
+            baseUrl: trimmedBackendUrl,
+            token: activeSession.token,
+            wrappedDeks: [
+              {
+                resourceId: note.id,
+                wrappedDek: {
+                  ...(await rewrapAsymmetricEncryptedDek(
+                    note,
+                    noteLinkedKek.cryptKey,
+                    latestApiUser.latestKekPublicKey,
+                  )),
+                  userId: latestApiUser.id,
+                },
               },
-            },
-          ],
-        });
+            ],
+          }));
 
         setApiUserProgress({
           apiUserId: latestApiUser.id,
@@ -1009,8 +1082,8 @@ export function AuthExperience() {
 
       await loadApiUsers({
         linkedKeks,
-        token: nextSession.token,
-        trimmedBackendUrl: backendUrl.trim(),
+        nextSession,
+        trimmedBackendUrl,
       });
       setStatusMessage(
         latestApiUser.provisioning.pendingResourceCount === 0
@@ -1674,6 +1747,13 @@ function requireLinkedKek(linkedKeks: PersistedLinkedKek[], activeKekId: string 
   }
 
   return linkedKek;
+}
+
+function hasUnauthorizedStatus(error: unknown) {
+  return !!error &&
+    typeof error === 'object' &&
+    'status' in error &&
+    error.status === 401;
 }
 
 function formatTimestamp(value: string) {

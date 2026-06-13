@@ -2,6 +2,8 @@ import * as SecureStore from 'expo-secure-store';
 
 import type { CryptKey } from '@repo/e2ee-auth/native';
 
+import { isAuthApiResponse, type AuthApiResponse } from './auth-api';
+
 const AUTH_PREFERENCES_STORAGE_KEY = 'auth-preferences';
 
 export type AuthPreferences = {
@@ -9,6 +11,7 @@ export type AuthPreferences = {
   email?: string;
   lastEmail: string;
   linkedKeks?: PersistedLinkedKek[];
+  session?: AuthApiResponse;
 };
 
 export type PersistedLinkedKek = {
@@ -98,6 +101,9 @@ export const secureStoreAuthPreferences: AuthPreferencesPersistence = {
           : undefined,
         lastEmail: parsedPreferences.lastEmail ?? '',
         linkedKeks,
+        session: isAuthApiResponse(parsedPreferences.session)
+          ? normalizeStoredSession(parsedPreferences.session)
+          : undefined,
       };
     } catch {
       return defaultPreferences;
@@ -119,6 +125,7 @@ export const secureStoreAuthPreferences: AuthPreferencesPersistence = {
           email: preferences.email?.trim().toLowerCase(),
           lastEmail: preferences.lastEmail.trim().toLowerCase(),
           linkedKeks: storedLinkedKeks,
+          session: preferences.session ? normalizeStoredSession(preferences.session) : undefined,
         }),
       );
     } catch {
@@ -126,3 +133,18 @@ export const secureStoreAuthPreferences: AuthPreferencesPersistence = {
     }
   },
 };
+
+function normalizeStoredSession(session: AuthApiResponse): AuthApiResponse {
+  return {
+    kekMetadatas: session.kekMetadatas.map((metadata) => ({
+      kekEpochVersion: metadata.kekEpochVersion,
+      kekPublicKey: metadata.kekPublicKey.trim(),
+    })),
+    refreshToken: session.refreshToken.trim(),
+    token: session.token.trim(),
+    user: {
+      email: session.user.email.trim().toLowerCase(),
+      id: session.user.id.trim(),
+    },
+  };
+}

@@ -140,6 +140,7 @@ api_users ||--o{ deks : user_id
 | `POST /api/auth/salt` | return the stored per-user salt plus active KEK metadata for login |
 | `POST /api/auth/register` | create a user from `email + authKey + saltHex` and return the initial KEK metadata |
 | `POST /api/auth/login` | verify the derived auth key, issue tokens, and return active KEK metadata |
+| `POST /api/auth/refresh` | exchange a refresh token for a fresh access token pair plus the latest KEK metadata |
 | `POST /api/auth/api-users/login` | verify an API user's derived auth key and issue principal-aware tokens |
 | `POST /api/auth/rotate-password` | update the stored auth-key hash and create the next KEK epoch |
 | `GET /api/auth/linked-principals` | return the owner plus linked principals with their latest KEK public keys |

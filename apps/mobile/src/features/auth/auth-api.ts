@@ -8,6 +8,11 @@ type AuthenticatedApiRequest = {
   token: string;
 };
 
+export type RefreshSessionApiRequest = {
+  baseUrl: string;
+  refreshToken: string;
+};
+
 export type KekMetadata = {
   kekEpochVersion: number;
   kekPublicKey: string;
@@ -82,6 +87,33 @@ export async function loginRequest(request: LoginApiRequest) {
   return postAuthRequest('/api/auth/login', request);
 }
 
+export async function refreshSessionRequest(request: RefreshSessionApiRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/auth/refresh'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      refreshToken: request.refreshToken,
+    }),
+  });
+
+  const responseBody = (await response.json().catch(() => null)) as
+    | AuthApiResponse
+    | { error?: string }
+    | null;
+
+  if (!response.ok) {
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
+  }
+
+  if (!isAuthApiResponse(responseBody)) {
+    throw new Error('The backend response was incomplete.');
+  }
+
+  return responseBody;
+}
+
 export async function registerRequest(request: RegisterApiRequest) {
   return postAuthRequest('/api/auth/register', request);
 }
@@ -105,7 +137,7 @@ export async function rotatePasswordRequest(request: RotatePasswordApiRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isAuthApiResponse(responseBody)) {
@@ -129,7 +161,7 @@ export async function fetchKekMigrationStatus(request: AuthenticatedApiRequest) 
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isKekMigrationStatusResponse(responseBody)) {
@@ -162,7 +194,7 @@ async function postAuthRequest(
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isAuthApiResponse(responseBody)) {
@@ -172,7 +204,7 @@ async function postAuthRequest(
   return responseBody;
 }
 
-function isAuthApiResponse(value: unknown): value is AuthApiResponse {
+export function isAuthApiResponse(value: unknown): value is AuthApiResponse {
   return !!value &&
     typeof value === 'object' &&
     'token' in value &&
@@ -247,4 +279,8 @@ function buildApiUrl(baseUrl: string, path: string) {
   }
 
   return `${normalizedBaseUrl}${path}`;
+}
+
+function withResponseStatus(error: Error, status: number) {
+  return Object.assign(error, { status });
 }

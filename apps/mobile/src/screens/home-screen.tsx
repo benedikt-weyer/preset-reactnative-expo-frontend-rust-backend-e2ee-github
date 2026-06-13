@@ -47,6 +47,7 @@ export function HomeScreen() {
     linkedKeks,
     persistLinkedKeks,
     refreshKekMigrationStatus,
+    runWithFreshSession,
     rotatePassword,
     session,
   } = useAuth();
@@ -95,10 +96,11 @@ export function HomeScreen() {
 
     try {
       await refreshKekMigrationStatus();
-      const remoteNotes = await fetchNotes({
-        baseUrl: backendUrl,
-        token: session.token,
-      });
+      const remoteNotes = await runWithFreshSession((activeSession) =>
+        fetchNotes({
+          baseUrl: backendUrl,
+          token: activeSession.token,
+        }));
 
       const decryptedNotes = sortNotes(
         await Promise.all(remoteNotes.map((note) => decryptNoteRecord(note, linkedKeks))),
@@ -131,7 +133,7 @@ export function HomeScreen() {
         error instanceof Error ? error.message : 'Unable to load encrypted notes.',
       );
     }
-  }, [backendUrl, linkedKeks, refreshKekMigrationStatus, session]);
+  }, [backendUrl, linkedKeks, refreshKekMigrationStatus, runWithFreshSession, session]);
 
   useEffect(() => {
     let isMounted = true;
@@ -214,18 +216,20 @@ export function HomeScreen() {
         }),
         activeLinkedKek.kekPublicKey,
       );
-      const savedNote = selectedNoteId
-        ? await updateNote({
-            baseUrl: backendUrl,
-            noteId: selectedNoteId,
-            payload: encryptedPayload,
-            token: session.token,
-          })
-        : await createNote({
-            baseUrl: backendUrl,
-            payload: encryptedPayload,
-            token: session.token,
-          });
+      const savedNote = await runWithFreshSession((activeSession) => (
+        selectedNoteId
+          ? updateNote({
+              baseUrl: backendUrl,
+              noteId: selectedNoteId,
+              payload: encryptedPayload,
+              token: activeSession.token,
+            })
+          : createNote({
+              baseUrl: backendUrl,
+              payload: encryptedPayload,
+              token: activeSession.token,
+            })
+      ));
 
       const decryptedNote = await decryptNoteRecord(savedNote, linkedKeks);
       const nextNotes = sortNotes([
@@ -255,11 +259,12 @@ export function HomeScreen() {
     }
 
     try {
-      await deleteNote({
-        baseUrl: backendUrl,
-        noteId: selectedNoteId,
-        token: session.token,
-      });
+      await runWithFreshSession((activeSession) =>
+        deleteNote({
+          baseUrl: backendUrl,
+          noteId: selectedNoteId,
+          token: activeSession.token,
+        }));
       const deletedNote = notes.find((note) => note.id === selectedNoteId) ?? null;
       const remainingNotes = notes.filter((note) => note.id !== selectedNoteId);
 
@@ -318,10 +323,11 @@ export function HomeScreen() {
       passwordsByKekId: migrationPasswords,
     });
     const latestLinkedKek = requireLinkedKek(workingLinkedKeks, latestKekId);
-    const remoteNotes = await fetchNotes({
-      baseUrl: backendUrl,
-      token: activeSession.token,
-    });
+    const remoteNotes = await runWithFreshSession((freshSession) =>
+      fetchNotes({
+        baseUrl: backendUrl,
+        token: freshSession.token,
+      }));
     const notesToRewrap = remoteNotes.filter(
       (note) => note.encryptedDek.kekPublicKey !== latestLinkedKek.kekPublicKey,
     );
@@ -342,19 +348,20 @@ export function HomeScreen() {
           );
         }
 
-        await updateNote({
-          baseUrl: backendUrl,
-          noteId: note.id,
-          payload: {
-            encryptedDek: await rewrapAsymmetricEncryptedDek(
-              note,
-              currentLinkedKek.cryptKey,
-              latestLinkedKek.kekPublicKey,
-            ),
-            encryptedPayload: note.encryptedPayload,
-          },
-          token: activeSession.token,
-        });
+        await runWithFreshSession(async (freshSession) =>
+          updateNote({
+            baseUrl: backendUrl,
+            noteId: note.id,
+            payload: {
+              encryptedDek: await rewrapAsymmetricEncryptedDek(
+                note,
+                currentLinkedKek.cryptKey,
+                latestLinkedKek.kekPublicKey,
+              ),
+              encryptedPayload: note.encryptedPayload,
+            },
+            token: freshSession.token,
+          }));
 
         setMigrationProgress({ completed: index + 1, total: notesToRewrap.length });
       }

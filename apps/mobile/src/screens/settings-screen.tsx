@@ -60,11 +60,13 @@ export function SettingsScreen() {
           Session
         </Text>
         <Text className={`text-base leading-7 ${tokens.body}`}>
-          Signing out clears the in-memory session token and password-derived crypt key.
+          Signing out clears the stored access and refresh tokens while keeping the local KEK material for the next login.
         </Text>
         <Pressable
           className="items-center rounded-full border border-stone-300 px-4 py-4 dark:border-slate-700"
-          onPress={signOut}
+          onPress={() => {
+            void signOut();
+          }}
         >
           <Text className={`text-sm font-semibold uppercase tracking-[1.5px] ${tokens.title}`}>
             Sign out

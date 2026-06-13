@@ -20,6 +20,7 @@ pub fn router() -> Router<AppState> {
     Router::new()
     .route("/linked-principals", get(linked_principals))
         .route("/kek-status", get(kek_status))
+        .route("/refresh", post(refresh))
         .route("/salt", post(salt))
         .route("/login", post(login))
     .route("/api-users/login", post(api_user_login))
@@ -42,6 +43,12 @@ pub struct EmailRequest {
 pub struct LoginRequest {
     email: String,
     auth_key: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshTokenRequest {
+    refresh_token: String,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -280,6 +287,15 @@ pub async fn login(
         },
     )
     .await?;
+
+    Ok(Json(map_auth_response(session)))
+}
+
+pub async fn refresh(
+    State(state): State<AppState>,
+    Json(payload): Json<RefreshTokenRequest>,
+) -> AppResult<Json<AuthResponse>> {
+    let session = service::refresh_session(&state, &payload.refresh_token).await?;
 
     Ok(Json(map_auth_response(session)))
 }

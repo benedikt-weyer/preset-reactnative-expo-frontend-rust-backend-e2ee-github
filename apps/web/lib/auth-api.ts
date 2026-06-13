@@ -10,6 +10,11 @@ type AuthenticatedApiRequest = {
   token: string;
 };
 
+export type RefreshSessionApiRequest = {
+  baseUrl: string;
+  refreshToken: string;
+};
+
 export type KekMetadata = {
   kekEpochVersion: number;
   kekPublicKey: string;
@@ -160,6 +165,20 @@ export async function loginRequest(request: LoginApiRequest) {
   return postAuthRequest('/api/auth/login', request);
 }
 
+export async function refreshSessionRequest(request: RefreshSessionApiRequest) {
+  const response = await fetch(buildApiUrl(request.baseUrl, '/api/auth/refresh'), {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      refreshToken: request.refreshToken,
+    }),
+  });
+
+  return readAuthResponse(response);
+}
+
 export async function registerRequest(request: RegisterApiRequest) {
   return postAuthRequest('/api/auth/register', request);
 }
@@ -198,7 +217,7 @@ export async function rotatePasswordRequest(request: RotatePasswordApiRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isAuthApiResponse(responseBody)) {
@@ -222,7 +241,7 @@ export async function fetchKekMigrationStatus(request: AuthenticatedApiRequest) 
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isKekMigrationStatusResponse(responseBody)) {
@@ -246,7 +265,7 @@ export async function fetchLinkedPrincipals(request: AuthenticatedApiRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!Array.isArray(responseBody) || !responseBody.every(isLinkedPrincipal)) {
@@ -270,7 +289,7 @@ export async function fetchApiUsers(request: AuthenticatedApiRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!Array.isArray(responseBody) || !responseBody.every(isApiUserResponse)) {
@@ -299,7 +318,7 @@ export async function fetchApiUser(
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isApiUserResponse(responseBody)) {
@@ -346,7 +365,7 @@ export async function deleteApiUserRequest(
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 }
 
@@ -363,7 +382,7 @@ export async function deleteAccountRequest(request: AuthenticatedApiRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 }
 
@@ -563,7 +582,7 @@ async function readAuthResponse(response: Response) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isAuthApiResponse(responseBody)) {
@@ -580,7 +599,7 @@ async function readApiUserResponse(response: Response) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!isApiUserResponse(responseBody)) {
@@ -614,4 +633,8 @@ function buildApiUrl(baseUrl: string, path: string) {
   }
 
   return `${normalizedBaseUrl}${path}`;
+}
+
+function withResponseStatus(error: Error, status: number) {
+  return Object.assign(error, { status });
 }

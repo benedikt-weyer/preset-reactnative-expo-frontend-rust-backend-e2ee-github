@@ -67,6 +67,7 @@ can derive the same `authKey` again:
 9. The app sends `email` and `authKey` to `POST /api/auth/login`.
 10. The backend hashes the received `authKey` with SHA-512 and compares it in constant time with the stored hash.
 11. If verification succeeds, the backend issues access and refresh JWTs and returns the current principal plus the current KEK metadata and linked principal list.
+12. The mobile client persists that session locally and later calls `POST /api/auth/refresh` to replace expired access tokens without re-deriving KEKs.
 
 ```plantuml format="svg_inline" alt="Login sequence" title="Login sequence"
 @startuml

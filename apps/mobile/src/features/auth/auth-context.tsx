@@ -19,6 +19,7 @@ import {
   fetchPasswordSalt,
   fetchKekMigrationStatus,
   loginRequest,
+  refreshSessionRequest,
   rotatePasswordRequest,
   registerRequest,
   type AuthApiResponse,
@@ -46,13 +47,14 @@ type AuthContextValue = {
   persistLinkedKeks: (linkedKeks: PersistedLinkedKek[]) => Promise<void>;
   refreshKekMigrationStatus: () => Promise<KekMigrationStatusResponse | null>;
   register: (email: string, password: string) => Promise<void>;
+  runWithFreshSession: <T>(callback: (session: Session) => Promise<T>) => Promise<T>;
   rotatePassword: (newPassword: string) => Promise<{
     activeKekId: string;
     linkedKeks: PersistedLinkedKek[];
     session: Session;
   }>;
   session: Session | null;
-  signOut: () => void;
+  signOut: () => Promise<void>;
   updateBackendUrl: (backendUrl: string) => Promise<void>;
 };
 
@@ -75,6 +77,14 @@ export function AuthProvider({ children }: AuthProviderProps) {
   const [pendingOlderKeks, setPendingOlderKeks] = useState<KekMetadata[]>([]);
   const [isHydrated, setIsHydrated] = useState(false);
 
+  const applySessionState = useCallback((nextSession: Session | null) => {
+    const sortedKekMetadatas = nextSession ? sortKekMetadatas(nextSession.kekMetadatas) : [];
+
+    setSession(nextSession);
+    setActiveKekId(sortedKekMetadatas[0]?.kekPublicKey ?? null);
+    setPendingOlderKeks(sortedKekMetadatas.slice(1));
+  }, []);
+
   useEffect(() => {
     let isMounted = true;
 
@@ -85,6 +95,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
         return;
       }
 
+      applySessionState(storedPreferences.session ?? null);
       setPreferences(storedPreferences);
       setIsHydrated(true);
     }
@@ -94,12 +105,32 @@ export function AuthProvider({ children }: AuthProviderProps) {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [applySessionState]);
 
   const persistPreferences = useCallback(async (nextPreferences: AuthPreferences) => {
     setPreferences(nextPreferences);
     await secureStoreAuthPreferences.write(nextPreferences);
   }, []);
+
+  const persistAuthenticatedState = useCallback(async (
+    nextSession: Session,
+    nextPreferences: AuthPreferences,
+  ) => {
+    applySessionState(nextSession);
+    await persistPreferences({
+      ...nextPreferences,
+      session: nextSession,
+    });
+  }, [applySessionState, persistPreferences]);
+
+  const persistSignedOutState = useCallback(async (nextPreferences: AuthPreferences) => {
+    applySessionState(null);
+    setKekMigrationStatus(null);
+    await persistPreferences({
+      ...nextPreferences,
+      session: undefined,
+    });
+  }, [applySessionState, persistPreferences]);
 
   const authenticate = useCallback(async (
     mode: 'login' | 'register',
@@ -205,17 +236,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
       ...nextDerivedLinkedKeks,
     ]);
 
-    setSession(response);
-    setActiveKekId(latestKekMetadata.kekPublicKey);
-    setPendingOlderKeks(responseKekMetadatas.slice(1));
-
-    await persistPreferences({
+    await persistAuthenticatedState(response, {
       backendUrl,
       email: credentials.email,
       lastEmail: credentials.email,
       linkedKeks: nextLinkedKeks,
     });
-  }, [persistPreferences, preferences]);
+  }, [persistAuthenticatedState, preferences]);
 
   const updateBackendUrl = useCallback(async (backendUrl: string) => {
     await persistPreferences({
@@ -231,21 +258,67 @@ export function AuthProvider({ children }: AuthProviderProps) {
     });
   }, [persistPreferences, preferences]);
 
+  const refreshSession = useCallback(async (currentSession: Session) => {
+    const nextSession = await refreshSessionRequest({
+      baseUrl: preferences.backendUrl,
+      refreshToken: currentSession.refreshToken,
+    });
+
+    await persistAuthenticatedState(nextSession, {
+      ...preferences,
+      email: nextSession.user.email,
+      lastEmail: nextSession.user.email,
+      linkedKeks: preferences.linkedKeks ?? [],
+    });
+
+    return nextSession;
+  }, [persistAuthenticatedState, preferences]);
+
+  const runWithFreshSession = useCallback(async <T,>(
+    callback: (currentSession: Session) => Promise<T>,
+  ) => {
+    if (!session) {
+      throw new Error('Log in before continuing.');
+    }
+
+    try {
+      return await callback(session);
+    } catch (error) {
+      if (!hasUnauthorizedStatus(error)) {
+        throw error;
+      }
+
+      try {
+        const refreshedSession = await refreshSession(session);
+        return await callback(refreshedSession);
+      } catch (refreshError) {
+        if (hasUnauthorizedStatus(refreshError)) {
+          await persistSignedOutState({
+            ...preferences,
+          });
+        }
+
+        throw refreshError;
+      }
+    }
+  }, [persistSignedOutState, preferences, refreshSession, session]);
+
   const refreshKekMigrationStatus = useCallback(async () => {
     if (!session) {
       setKekMigrationStatus(null);
       return null;
     }
 
-    const nextStatus = await fetchKekMigrationStatus({
-      baseUrl: preferences.backendUrl,
-      token: session.token,
-    });
+    const nextStatus = await runWithFreshSession((currentSession) =>
+      fetchKekMigrationStatus({
+        baseUrl: preferences.backendUrl,
+        token: currentSession.token,
+      }));
 
     setKekMigrationStatus(nextStatus);
 
     return nextStatus;
-  }, [preferences.backendUrl, session]);
+  }, [preferences.backendUrl, runWithFreshSession, session]);
 
   const rotatePassword = useCallback(async (newPassword: string) => {
     if (!session) {
@@ -260,12 +333,13 @@ export function AuthProvider({ children }: AuthProviderProps) {
 
     const credentials = await deriveCredentials(session.user.email, newPassword, saltHex);
     const kekKeyPair = await deriveKekKeyPair(credentials.cryptKey);
-    const response = await rotatePasswordRequest({
-      baseUrl: preferences.backendUrl,
-      kekPublicKey: kekKeyPair.kekPublicKey,
-      newAuthKey: credentials.authKey,
-      token: session.token,
-    });
+    const response = await runWithFreshSession((currentSession) =>
+      rotatePasswordRequest({
+        baseUrl: preferences.backendUrl,
+        kekPublicKey: kekKeyPair.kekPublicKey,
+        newAuthKey: credentials.authKey,
+        token: currentSession.token,
+      }));
     const latestKekMetadata = sortKekMetadatas(response.kekMetadatas)[0];
 
     if (!latestKekMetadata) {
@@ -282,29 +356,26 @@ export function AuthProvider({ children }: AuthProviderProps) {
       },
     ]);
 
-    setSession(response);
-    setActiveKekId(latestKekMetadata.kekPublicKey);
-    setPendingOlderKeks(response.kekMetadatas.slice(1));
-    await persistPreferences({
+    await persistAuthenticatedState(response, {
       ...preferences,
       email: session.user.email,
       linkedKeks: nextLinkedKeks,
       lastEmail: session.user.email,
     });
+    setKekMigrationStatus(null);
 
     return {
       activeKekId: latestKekMetadata.kekPublicKey,
       linkedKeks: nextLinkedKeks,
       session: response,
     };
-  }, [persistPreferences, preferences, session]);
+  }, [persistAuthenticatedState, preferences, runWithFreshSession, session]);
 
-  const signOut = useCallback(() => {
-    setSession(null);
-    setActiveKekId(null);
-    setKekMigrationStatus(null);
-    setPendingOlderKeks([]);
-  }, []);
+  const signOut = useCallback(async () => {
+    await persistSignedOutState({
+      ...preferences,
+    });
+  }, [persistSignedOutState, preferences]);
 
   const login = useCallback(
     (email: string, password: string, olderPasswords?: Record<string, string>) =>
@@ -331,6 +402,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       persistLinkedKeks,
       refreshKekMigrationStatus,
       register,
+      runWithFreshSession,
       rotatePassword,
       session,
       signOut,
@@ -348,6 +420,7 @@ export function AuthProvider({ children }: AuthProviderProps) {
       preferences.linkedKeks,
       refreshKekMigrationStatus,
       register,
+      runWithFreshSession,
       rotatePassword,
       session,
       signOut,
@@ -382,6 +455,13 @@ function mergeLinkedKeks(linkedKeks: PersistedLinkedKek[]) {
   return [...entriesByKekPublicKey.values()].sort(
     (left, right) => right.kekEpochVersion - left.kekEpochVersion,
   );
+}
+
+function hasUnauthorizedStatus(error: unknown) {
+  return !!error &&
+    typeof error === 'object' &&
+    'status' in error &&
+    error.status === 401;
 }
 
 export function useAuth() {

@@ -37,7 +37,7 @@ export async function fetchNotes(request: AuthenticatedRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   if (!Array.isArray(responseBody)) {
@@ -61,7 +61,7 @@ export async function fetchNote(request: NoteByIdRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   return validatePayload(responseBody);
@@ -83,7 +83,7 @@ export async function createNote(request: SaveNoteRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   return validatePayload(responseBody);
@@ -105,7 +105,7 @@ export async function updateNote(request: UpdateNoteRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 
   return validatePayload(responseBody);
@@ -125,7 +125,7 @@ export async function deleteNote(request: NoteByIdRequest) {
     | null;
 
   if (!response.ok) {
-    throw new Error(readErrorMessage(responseBody));
+    throw withResponseStatus(new Error(readErrorMessage(responseBody)), response.status);
   }
 }
 
@@ -216,4 +216,8 @@ function buildNotePath(noteId: string) {
   }
 
   return `/api/notes/${encodeURIComponent(normalizedNoteId)}`;
+}
+
+function withResponseStatus(error: Error, status: number) {
+  return Object.assign(error, { status });
 }

@@ -148,6 +148,18 @@ pub struct AuthenticatedUser {
 }
 
 pub fn authenticate_access_token(state: &AppState, token: &str) -> AppResult<AuthenticatedUser> {
+    authenticate_token(state, token, TokenType::Access)
+}
+
+fn authenticate_refresh_token(state: &AppState, token: &str) -> AppResult<AuthenticatedUser> {
+    authenticate_token(state, token, TokenType::Refresh)
+}
+
+fn authenticate_token(
+    state: &AppState,
+    token: &str,
+    required_token_type: TokenType,
+) -> AppResult<AuthenticatedUser> {
     let token_data = decode::<Claims>(
         token,
         &DecodingKey::from_secret(state.config.jwt_secret.as_bytes()),
@@ -155,8 +167,13 @@ pub fn authenticate_access_token(state: &AppState, token: &str) -> AppResult<Aut
     )
     .map_err(|_| AppError::unauthorized("invalid bearer token"))?;
 
-    if token_data.claims.token_type != TokenType::Access {
-        return Err(AppError::unauthorized("an access token is required"));
+    if token_data.claims.token_type != required_token_type {
+        let message = match required_token_type {
+            TokenType::Access => "an access token is required",
+            TokenType::Refresh => "a refresh token is required",
+        };
+
+        return Err(AppError::unauthorized(message));
     }
 
     Ok(AuthenticatedUser {
@@ -166,6 +183,61 @@ pub fn authenticate_access_token(state: &AppState, token: &str) -> AppResult<Aut
             .map_err(|_| AppError::unauthorized("invalid bearer token"))?,
         principal_kind: token_data.claims.principal_kind,
     })
+}
+
+pub async fn refresh_session(state: &AppState, refresh_token: &str) -> AppResult<AuthSession> {
+    let authenticated_user = authenticate_refresh_token(state, refresh_token)?;
+
+    match authenticated_user.principal_kind {
+        PrincipalKind::User => {
+            let user = repository::find_user_by_id(&state.db, authenticated_user.owner_user_id)
+                .await?
+                .ok_or_else(|| AppError::unauthorized("invalid bearer token"))?;
+            let kek_metadatas = repository::list_kek_metadata_for_user(
+                &state.db,
+                authenticated_user.principal_id,
+            )
+            .await?;
+
+            build_auth_session(
+                state,
+                &user,
+                repository::PrincipalRecord {
+                    principal_id: user.id,
+                    owner_user_id: user.id,
+                    kind: PrincipalKind::User,
+                    email: Some(user.email.clone()),
+                    username: None,
+                },
+                kek_metadatas,
+            )
+            .await
+        }
+        PrincipalKind::ApiUser => {
+            let api_user = repository::find_api_user_by_id(&state.db, authenticated_user.principal_id)
+                .await?
+                .filter(|api_user| api_user.user_id == authenticated_user.owner_user_id)
+                .ok_or_else(|| AppError::unauthorized("invalid bearer token"))?;
+            let owner_user = repository::find_user_by_id(&state.db, api_user.user_id)
+                .await?
+                .ok_or_else(|| AppError::internal("missing owner user for refresh token"))?;
+            let kek_metadatas = repository::list_kek_metadata_for_user(&state.db, api_user.id).await?;
+
+            build_auth_session(
+                state,
+                &owner_user,
+                repository::PrincipalRecord {
+                    principal_id: api_user.id,
+                    owner_user_id: api_user.user_id,
+                    kind: PrincipalKind::ApiUser,
+                    email: None,
+                    username: Some(api_user.username.clone()),
+                },
+                kek_metadatas,
+            )
+            .await
+        }
+    }
 }
 
 pub async fn register(state: &AppState, command: RegisterCommand) -> AppResult<AuthSession> {
@@ -1041,6 +1113,40 @@ mod tests {
         response::IntoResponse,
     };
 
+    fn test_state() -> AppState {
+        let (note_events, _) = tokio::sync::broadcast::channel(1);
+
+        AppState {
+            config: crate::config::Config {
+                bind_addr: "127.0.0.1:4000".parse().expect("bind addr should parse"),
+                database_url: "postgres://example.invalid/backend".to_owned(),
+                jwt_secret: "test-secret".to_owned(),
+                jwt_ttl_minutes: 15,
+                jwt_refresh_ttl_minutes: 60,
+            },
+            db: sea_orm::DatabaseConnection::Disconnected,
+            note_events,
+        }
+    }
+
+    fn encode_test_token(token_type: TokenType) -> String {
+        let state = test_state();
+
+        encode(
+            &Header::default(),
+            &Claims {
+                sub: Uuid::new_v4().to_string(),
+                owner_user_id: Uuid::new_v4().to_string(),
+                email: "person@example.com".to_owned(),
+                principal_kind: PrincipalKind::User,
+                token_type,
+                exp: (Utc::now().timestamp() + 60) as usize,
+            },
+            &EncodingKey::from_secret(state.config.jwt_secret.as_bytes()),
+        )
+        .expect("test token should encode")
+    }
+
     async fn assert_error_response(error: AppError, status: StatusCode, message: &str) {
         let response = error.into_response();
 
@@ -1143,21 +1249,34 @@ mod tests {
             .expect("request should build")
             .into_parts()
             .0;
-        let state = AppState {
-            config: crate::config::Config {
-                bind_addr: "127.0.0.1:4000".parse().expect("bind addr should parse"),
-                database_url: "postgres://example.invalid/backend".to_owned(),
-                jwt_secret: "test-secret".to_owned(),
-                jwt_ttl_minutes: 15,
-                jwt_refresh_ttl_minutes: 60,
-            },
-            db: sea_orm::DatabaseConnection::Disconnected,
-        };
+        let state = test_state();
 
         let error = AuthenticatedUser::from_request_parts(&mut parts, &state)
             .await
             .expect_err("missing header should be rejected");
 
         assert_error_response(error, StatusCode::UNAUTHORIZED, "missing bearer token").await;
+    }
+
+    #[tokio::test]
+    async fn authenticate_access_token_rejects_refresh_tokens() {
+        let state = test_state();
+        let token = encode_test_token(TokenType::Refresh);
+
+        let error = authenticate_access_token(&state, &token)
+            .expect_err("refresh token should not satisfy access auth");
+
+        assert_error_response(error, StatusCode::UNAUTHORIZED, "an access token is required").await;
+    }
+
+    #[tokio::test]
+    async fn authenticate_refresh_token_rejects_access_tokens() {
+        let state = test_state();
+        let token = encode_test_token(TokenType::Access);
+
+        let error = authenticate_refresh_token(&state, &token)
+            .expect_err("access token should not satisfy refresh auth");
+
+        assert_error_response(error, StatusCode::UNAUTHORIZED, "a refresh token is required").await;
     }
 }
