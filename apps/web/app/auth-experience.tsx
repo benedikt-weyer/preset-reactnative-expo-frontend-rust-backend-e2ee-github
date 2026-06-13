@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowRight, LockKeyhole, ShieldCheck, Trash2, UserRound } from 'lucide-react';
-import { subscribeToNoteEvents } from '@repo/note-realtime';
+import { subscribeToNoteEvents } from '@repo/realtime';
 
 import {
   createApiToken,

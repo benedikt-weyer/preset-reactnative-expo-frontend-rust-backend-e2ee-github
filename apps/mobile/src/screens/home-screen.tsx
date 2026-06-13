@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { Pressable, Text, TextInput, View } from 'react-native';
-import { subscribeToNoteEvents } from '@repo/note-realtime';
+import { subscribeToNoteEvents } from '@repo/realtime';
 
 import {
   decryptStringWithAsymmetricKek,

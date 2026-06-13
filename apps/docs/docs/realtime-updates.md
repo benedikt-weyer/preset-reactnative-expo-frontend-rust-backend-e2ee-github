@@ -70,7 +70,7 @@ Client -> Client: decrypt locally with KEKs
 
 ## Event payload
 
-The shared `@repo/note-realtime` package expects this payload shape:
+The shared `@repo/realtime` package expects this payload shape:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -119,7 +119,7 @@ or behind a reverse proxy that terminates TLS, the shared client will upgrade to
 
 ## Shared package
 
-The monorepo now includes `@repo/note-realtime` as the shared websocket client
+The monorepo now includes `@repo/realtime` as the shared websocket client
 surface for both app targets.
 
 That package is responsible for:
@@ -128,6 +128,9 @@ That package is responsible for:
 - upgrading `http` to `ws` and `https` to `wss`
 - validating incoming note-change payloads
 - reconnecting after disconnects
+
+See [Realtime Package](realtime-package.md) for the package-level API,
+exported interfaces, and the consumer/package responsibility split.
 
 The web and mobile apps subscribe to that shared package and reuse their
 existing note reload paths when an event arrives.

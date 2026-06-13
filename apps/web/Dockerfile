@@ -13,7 +13,7 @@ WORKDIR /app
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml turbo.json ./
 COPY apps/web/package.json apps/web/package.json
 COPY packages/e2ee-auth/package.json packages/e2ee-auth/package.json
-COPY packages/note-realtime/package.json packages/note-realtime/package.json
+COPY packages/realtime/package.json packages/realtime/package.json
 COPY packages/oqs-kek/package.json packages/oqs-kek/package.json
 
 RUN pnpm install --frozen-lockfile --filter web...
@@ -25,7 +25,7 @@ WORKDIR /app
 COPY --from=deps /app/ ./
 COPY apps/web ./apps/web
 COPY packages/e2ee-auth ./packages/e2ee-auth
-COPY packages/note-realtime ./packages/note-realtime
+COPY packages/realtime ./packages/realtime
 COPY packages/oqs-kek ./packages/oqs-kek
 
 RUN mkdir -p apps/web/public \
