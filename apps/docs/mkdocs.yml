@@ -31,6 +31,7 @@ nav:
   - Integration Tests: integration-tests.md
   - Auth And E2EE:
       - Overview: auth-e2ee.md
+      - E2EE Auth Package: auth-e2ee-package.md
       - Registration And Login: auth-authentication.md
       - Password Rotation: auth-password-rotation.md
       - Note Encryption: auth-note-encryption.md

@@ -71,6 +71,7 @@ end note
 
 ## Documentation map
 
+- [E2EE Auth Package](auth-e2ee-package.md) inventories the public `@repo/e2ee-auth` API surface, platform differences, and the boundary between package and application responsibilities.
 - [Registration And Login](auth-authentication.md) explains account creation, salt lookup, and login verification with sequence diagrams.
 - [Password Rotation](auth-password-rotation.md) covers rotating the auth verifier, creating a new KEK epoch, and rewrapping DEKs.
 - [Note Encryption](auth-note-encryption.md) shows how note payloads and wrapped DEKs move through save and load paths.
